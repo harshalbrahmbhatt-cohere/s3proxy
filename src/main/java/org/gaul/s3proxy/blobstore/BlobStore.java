@@ -44,6 +44,8 @@ import software.amazon.awssdk.services.s3.model.CreateBucketResponse;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleRequest;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleResponse;
 import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
@@ -54,6 +56,8 @@ import software.amazon.awssdk.services.s3.model.GetBucketAclRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketAclResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketLocationRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketLocationResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
@@ -82,6 +86,8 @@ import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.Part;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
@@ -657,6 +663,54 @@ public interface BlobStore extends AutoCloseable {
                 DeleteBucketEncryptionRequest.builder()
                         .bucket(container)
                         .build());
+    }
+
+    /**
+     * Whether this store answers the bucket lifecycle configuration, the
+     * ?lifecycle subresource.  Only a store that reports true honors the
+     * operations below -- and it must be one that acts on the rules it
+     * accepts, since a configuration kept but never applied would promise
+     * deletions that never happen.  The default implementations throw
+     * UnsupportedOperationException, which the frontend answers
+     * NotImplemented before consulting them.
+     */
+    default boolean supportsBucketLifecycle() {
+        return false;
+    }
+
+    /**
+     * GetBucketLifecycleConfiguration: the bucket's lifecycle rules.  A
+     * bucket that was never given any answers the way S3 spells it -- a 404
+     * whose code is NoSuchLifecycleConfiguration -- rather than an empty
+     * configuration.
+     */
+    default GetBucketLifecycleConfigurationResponse
+            getBucketLifecycleConfiguration(
+                    GetBucketLifecycleConfigurationRequest request) {
+        throw new UnsupportedOperationException(
+                "bucket lifecycle not supported");
+    }
+
+    /**
+     * PutBucketLifecycleConfiguration: replaces the bucket's rules outright.
+     * The frontend vets the configuration first; the store refuses whatever
+     * part of it it cannot carry out rather than dropping that part.
+     */
+    default PutBucketLifecycleConfigurationResponse
+            putBucketLifecycleConfiguration(
+                    PutBucketLifecycleConfigurationRequest request) {
+        throw new UnsupportedOperationException(
+                "bucket lifecycle not supported");
+    }
+
+    /**
+     * DeleteBucketLifecycle: removes every rule, and removing a
+     * configuration that a bucket does not have already succeeds.
+     */
+    default DeleteBucketLifecycleResponse deleteBucketLifecycle(
+            DeleteBucketLifecycleRequest request) {
+        throw new UnsupportedOperationException(
+                "bucket lifecycle not supported");
     }
 
     /**

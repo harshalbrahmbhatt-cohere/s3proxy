@@ -651,6 +651,15 @@ public final class EncryptedBlobStore extends ForwardingBlobStore {
         }
         return head;
     }
+    // Disable lifecycle configuration: the backend holds ciphertext under
+    // suffixed names, padded and trailed by the metadata decryption needs,
+    // so it would judge a rule's filters against sizes and keys the client
+    // never sees.
+    @Override
+    public boolean supportsBucketLifecycle() {
+        return false;
+    }
+
     // Disable versioning: versioned reads would return ciphertext and
     // suffixed names.
     @Override

@@ -235,6 +235,13 @@ final class EventualBlobStore extends ForwardingBlobStore {
             return null;
         }
     }
+    // Disable lifecycle configuration: the rules would reach only the store
+    // reads come from, not the one writes land in.
+    @Override
+    public boolean supportsBucketLifecycle() {
+        return false;
+    }
+
     // Disable versioning: the near and far stores disagree about
     // versions.
     @Override

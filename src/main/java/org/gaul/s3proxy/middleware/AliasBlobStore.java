@@ -46,12 +46,16 @@ import software.amazon.awssdk.services.s3.model.CreateBucketResponse;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleRequest;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketAclRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketAclResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectAclRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectAclResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -67,6 +71,8 @@ import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.Part;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.UploadPartCopyRequest;
@@ -176,6 +182,32 @@ public final class AliasBlobStore extends ForwardingBlobStore {
     public DeleteBucketEncryptionResponse deleteBucketEncryption(
             DeleteBucketEncryptionRequest request) {
         return delegate().deleteBucketEncryption(request.toBuilder()
+                .bucket(getContainer(request.bucket()))
+                .build());
+    }
+
+    @Override
+    public GetBucketLifecycleConfigurationResponse
+            getBucketLifecycleConfiguration(
+                    GetBucketLifecycleConfigurationRequest request) {
+        return delegate().getBucketLifecycleConfiguration(request.toBuilder()
+                .bucket(getContainer(request.bucket()))
+                .build());
+    }
+
+    @Override
+    public PutBucketLifecycleConfigurationResponse
+            putBucketLifecycleConfiguration(
+                    PutBucketLifecycleConfigurationRequest request) {
+        return delegate().putBucketLifecycleConfiguration(request.toBuilder()
+                .bucket(getContainer(request.bucket()))
+                .build());
+    }
+
+    @Override
+    public DeleteBucketLifecycleResponse deleteBucketLifecycle(
+            DeleteBucketLifecycleRequest request) {
+        return delegate().deleteBucketLifecycle(request.toBuilder()
                 .bucket(getContainer(request.bucket()))
                 .build());
     }

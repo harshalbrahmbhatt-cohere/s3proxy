@@ -61,6 +61,8 @@ import software.amazon.awssdk.services.s3.model.CreateBucketResponse;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleRequest;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleResponse;
 import software.amazon.awssdk.services.s3.model.DeleteBucketRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
@@ -70,6 +72,8 @@ import software.amazon.awssdk.services.s3.model.GetBucketAclRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketAclResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketLocationRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketLocationResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
@@ -101,6 +105,8 @@ import software.amazon.awssdk.services.s3.model.Permission;
 import software.amazon.awssdk.services.s3.model.PutBucketAclRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectAclRequest;
@@ -576,6 +582,48 @@ public final class AwsS3SdkBlobStore implements BlobStore {
             DeleteBucketEncryptionRequest request) {
         try {
             return s3Client.deleteBucketEncryption(request);
+        } catch (S3Exception e) {
+            throw propagate(e, request.bucket(), /*key=*/ null);
+        }
+    }
+
+    /**
+     * The backend applies the rules itself, so the configuration passes
+     * through as S3 would take it, and a rule the backend cannot honor is
+     * refused by the backend rather than here.
+     */
+    @Override
+    public boolean supportsBucketLifecycle() {
+        return true;
+    }
+
+    @Override
+    public GetBucketLifecycleConfigurationResponse
+            getBucketLifecycleConfiguration(
+                    GetBucketLifecycleConfigurationRequest request) {
+        try {
+            return s3Client.getBucketLifecycleConfiguration(request);
+        } catch (S3Exception e) {
+            throw propagate(e, request.bucket(), /*key=*/ null);
+        }
+    }
+
+    @Override
+    public PutBucketLifecycleConfigurationResponse
+            putBucketLifecycleConfiguration(
+                    PutBucketLifecycleConfigurationRequest request) {
+        try {
+            return s3Client.putBucketLifecycleConfiguration(request);
+        } catch (S3Exception e) {
+            throw propagate(e, request.bucket(), /*key=*/ null);
+        }
+    }
+
+    @Override
+    public DeleteBucketLifecycleResponse deleteBucketLifecycle(
+            DeleteBucketLifecycleRequest request) {
+        try {
+            return s3Client.deleteBucketLifecycle(request);
         } catch (S3Exception e) {
             throw propagate(e, request.bucket(), /*key=*/ null);
         }

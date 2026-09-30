@@ -41,8 +41,12 @@ import software.amazon.awssdk.services.s3.model.CompleteMultipartUploadResponse;
 import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.CopyObjectResponse;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleRequest;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectAclRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectAclResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -53,6 +57,8 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
 import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.Part;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Object;
@@ -368,6 +374,40 @@ public final class PrefixBlobStore extends ForwardingBlobStore {
         }
         return builder.build();
     }
+    // A prefixed bucket shares its backend bucket with whatever else lives
+    // there, and a lifecycle configuration belongs to the whole backend
+    // bucket: writing one would replace every other tenant's rules, and
+    // reading one would report them.  Unprefixed buckets pass through.
+    @Override
+    public GetBucketLifecycleConfigurationResponse
+            getBucketLifecycleConfiguration(
+                    GetBucketLifecycleConfigurationRequest request) {
+        checkNotPrefixed(request.bucket());
+        return delegate().getBucketLifecycleConfiguration(request);
+    }
+
+    @Override
+    public PutBucketLifecycleConfigurationResponse
+            putBucketLifecycleConfiguration(
+                    PutBucketLifecycleConfigurationRequest request) {
+        checkNotPrefixed(request.bucket());
+        return delegate().putBucketLifecycleConfiguration(request);
+    }
+
+    @Override
+    public DeleteBucketLifecycleResponse deleteBucketLifecycle(
+            DeleteBucketLifecycleRequest request) {
+        checkNotPrefixed(request.bucket());
+        return delegate().deleteBucketLifecycle(request);
+    }
+
+    private void checkNotPrefixed(String container) {
+        if (hasPrefix(container)) {
+            throw new UnsupportedOperationException(
+                    "lifecycle configuration on a prefixed bucket");
+        }
+    }
+
     // Disable versioning: the prefix rewrite does not extend to the
     // versioned operations.
     @Override

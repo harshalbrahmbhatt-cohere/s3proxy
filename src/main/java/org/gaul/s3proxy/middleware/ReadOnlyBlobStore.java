@@ -33,6 +33,8 @@ import software.amazon.awssdk.services.s3.model.CreateBucketResponse;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleRequest;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
@@ -41,6 +43,8 @@ import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
@@ -115,6 +119,19 @@ final class ReadOnlyBlobStore extends ForwardingBlobStore {
     @Override
     public DeleteBucketEncryptionResponse deleteBucketEncryption(
             DeleteBucketEncryptionRequest request) {
+        throw new UnsupportedOperationException("read-only BlobStore");
+    }
+
+    @Override
+    public PutBucketLifecycleConfigurationResponse
+            putBucketLifecycleConfiguration(
+                    PutBucketLifecycleConfigurationRequest request) {
+        throw new UnsupportedOperationException("read-only BlobStore");
+    }
+
+    @Override
+    public DeleteBucketLifecycleResponse deleteBucketLifecycle(
+            DeleteBucketLifecycleRequest request) {
         throw new UnsupportedOperationException("read-only BlobStore");
     }
 

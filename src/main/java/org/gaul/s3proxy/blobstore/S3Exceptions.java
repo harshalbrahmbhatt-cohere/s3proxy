@@ -140,6 +140,21 @@ public final class S3Exceptions {
     }
 
     /**
+     * The 404 a bucket answers ?lifecycle with before any rules have been
+     * put, or after they have been deleted.
+     */
+    public static S3Exception noSuchLifecycleConfiguration(String container) {
+        return (S3Exception) S3Exception.builder()
+                .message("no lifecycle configuration on container %s"
+                        .formatted(container))
+                .statusCode(404)
+                .awsErrorDetails(details(404, "NoSuchLifecycleConfiguration",
+                        "The lifecycle configuration does not exist",
+                        Map.of()))
+                .build();
+    }
+
+    /**
      * The 404 a bucket answers ?encryption with before any configuration
      * has been put, spelled with the code S3 uses for it.
      */
