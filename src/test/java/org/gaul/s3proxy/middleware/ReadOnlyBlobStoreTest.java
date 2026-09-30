@@ -147,12 +147,14 @@ public final class ReadOnlyBlobStoreTest {
                 "blobExists", "blobMetadata", "close", "delegate", "getBlob",
                 "getBlobAccess", "getBlobAcl", "getBucketEncryption",
                 "getBucketVersioning", "getContainerAccess",
-                "getContainerAcl",
+                "getContainerAcl", "getObjectLegalHold",
+                "getObjectLockConfiguration", "getObjectRetention",
                 "getMinimumMultipartPartSize", "headBucket", "list",
                 "listMultipartUpload",
                 "listMultipartUploads", "listV1", "listVersions",
                 "supportsBucketEncryption", "supportsCopyMultipartPart",
-                "supportsServerSideEncryption", "supportsVersioning");
+                "supportsObjectLock", "supportsServerSideEncryption",
+                "supportsVersioning");
 
         var missing = new ArrayList<String>();
         for (Method method : ForwardingBlobStore.class.getDeclaredMethods()) {

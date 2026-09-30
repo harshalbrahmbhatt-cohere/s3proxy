@@ -60,8 +60,14 @@ import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectAclRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectAclResponse;
+import software.amazon.awssdk.services.s3.model.GetObjectLegalHoldRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectLegalHoldResponse;
+import software.amazon.awssdk.services.s3.model.GetObjectLockConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectLockConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.GetObjectRetentionRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRetentionResponse;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
@@ -84,8 +90,14 @@ import software.amazon.awssdk.services.s3.model.PutBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionResponse;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningResponse;
+import software.amazon.awssdk.services.s3.model.PutObjectLegalHoldRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectLegalHoldResponse;
+import software.amazon.awssdk.services.s3.model.PutObjectLockConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectLockConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.services.s3.model.PutObjectRetentionRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectRetentionResponse;
 import software.amazon.awssdk.services.s3.model.S3Error;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
@@ -595,6 +607,65 @@ public interface BlobStore extends AutoCloseable {
     }
 
     /**
+     * Whether this store supports S3 object lock: the bucket ?object-lock
+     * configuration, per-version retention and legal hold, and the
+     * x-amz-object-lock-* headers on writes.  Only a store that reports true
+     * honors the operations below; the default implementations throw
+     * UnsupportedOperationException, which the frontend answers
+     * NotImplemented before consulting them.  A store that reports true
+     * still refuses these on a bucket without object lock, as S3 does.
+     */
+    default boolean supportsObjectLock() {
+        return false;
+    }
+
+    /**
+     * GetObjectLockConfiguration.  A bucket without object lock answers
+     * S3's ObjectLockConfigurationNotFoundError.
+     */
+    default GetObjectLockConfigurationResponse getObjectLockConfiguration(
+            GetObjectLockConfigurationRequest request) {
+        throw new UnsupportedOperationException("object lock not supported");
+    }
+
+    /**
+     * PutObjectLockConfiguration: enables object lock on a bucket whose
+     * versioning is Enabled, or sets its default retention rule.
+     */
+    default PutObjectLockConfigurationResponse putObjectLockConfiguration(
+            PutObjectLockConfigurationRequest request) {
+        throw new UnsupportedOperationException("object lock not supported");
+    }
+
+    /** GetObjectRetention for the version the request names. */
+    default GetObjectRetentionResponse getObjectRetention(
+            GetObjectRetentionRequest request) {
+        throw new UnsupportedOperationException("object lock not supported");
+    }
+
+    /**
+     * PutObjectRetention.  Shortening or removing GOVERNANCE retention
+     * requires the request's bypassGovernanceRetention; COMPLIANCE may only
+     * be extended.
+     */
+    default PutObjectRetentionResponse putObjectRetention(
+            PutObjectRetentionRequest request) {
+        throw new UnsupportedOperationException("object lock not supported");
+    }
+
+    /** GetObjectLegalHold for the version the request names. */
+    default GetObjectLegalHoldResponse getObjectLegalHold(
+            GetObjectLegalHoldRequest request) {
+        throw new UnsupportedOperationException("object lock not supported");
+    }
+
+    /** PutObjectLegalHold for the version the request names. */
+    default PutObjectLegalHoldResponse putObjectLegalHold(
+            PutObjectLegalHoldRequest request) {
+        throw new UnsupportedOperationException("object lock not supported");
+    }
+
+    /**
      * Whether this store answers the bucket default-encryption
      * configuration, the ?encryption subresource.  Only a store that
      * reports true honors the operations below; the default
@@ -705,7 +776,8 @@ public interface BlobStore extends AutoCloseable {
         var futuresBuilder = new ImmutableList.Builder<Future<DeletedObject>>();
         for (ObjectIdentifier object : objects) {
             futuresBuilder.add(executor.submit(
-                    () -> removeOneBlob(container, object)));
+                    () -> removeOneBlob(container, object,
+                            request.bypassGovernanceRetention())));
         }
         // Nothing else is submitted, so the pool ends with these tasks.
         executor.shutdown();
@@ -755,11 +827,12 @@ public interface BlobStore extends AutoCloseable {
 
     /** Deletes one object, reporting the marker a versioned delete wrote. */
     private DeletedObject removeOneBlob(String container,
-            ObjectIdentifier object) {
+            ObjectIdentifier object, @Nullable Boolean bypass) {
         DeleteObjectResponse result = removeBlob(DeleteObjectRequest.builder()
                 .bucket(container)
                 .key(object.key())
                 .versionId(object.versionId())
+                .bypassGovernanceRetention(bypass)
                 .build());
         var builder = DeletedObject.builder()
                 .key(object.key())
