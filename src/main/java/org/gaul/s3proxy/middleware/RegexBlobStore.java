@@ -264,4 +264,11 @@ public final class RegexBlobStore extends ForwardingBlobStore {
         return false;
     }
 
+    // Object lock needs versioning, which this middleware turns off, so it
+    // cannot offer lock either.
+    @Override
+    public boolean supportsObjectLock() {
+        return false;
+    }
+
 }

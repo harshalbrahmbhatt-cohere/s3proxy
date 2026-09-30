@@ -131,6 +131,11 @@ public final class SdkResponses {
                 .expires(response.expires())
                 .lastModified(response.lastModified())
                 .metadata(response.metadata())
+                .objectLockLegalHoldStatus(
+                        response.objectLockLegalHoldStatusAsString())
+                .objectLockMode(response.objectLockModeAsString())
+                .objectLockRetainUntilDate(
+                        response.objectLockRetainUntilDate())
                 .serverSideEncryption(response.serverSideEncryptionAsString())
                 .ssekmsKeyId(response.ssekmsKeyId())
                 .sseCustomerAlgorithm(response.sseCustomerAlgorithm())
