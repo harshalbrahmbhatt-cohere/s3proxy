@@ -94,12 +94,14 @@ import software.amazon.awssdk.services.s3.model.CompletedPart;
 import software.amazon.awssdk.services.s3.model.CopyObjectResponse;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadResponse;
+import software.amazon.awssdk.services.s3.model.ExpirationStatus;
 import software.amazon.awssdk.services.s3.model.GetObjectAclResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectAttributesResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.Grant;
 import software.amazon.awssdk.services.s3.model.Grantee;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.LifecycleRule;
 import software.amazon.awssdk.services.s3.model.ListBucketsResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectsResponse;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Response;
@@ -3741,6 +3743,86 @@ public final class AwsSdkTest {
         } catch (S3Exception e) {
             assertThat(e.awsErrorDetails().errorCode())
                     .isEqualTo("NoSuchPolicy");
+        }
+    }
+
+    /**
+     * The lifecycle configuration end to end: through the aws-s3 backend it
+     * reaches the service and reads back from it, and every other backend
+     * refuses it -- none applies rules yet -- without deleting the bucket on
+     * the way.
+     */
+    @Test
+    public void testBucketLifecycleConfiguration() throws Exception {
+        var rule = LifecycleRule.builder()
+                .id("expire-logs")
+                .status(ExpirationStatus.ENABLED)
+                .filter(f -> f.prefix("logs/"))
+                .expiration(e -> e.days(30))
+                .build();
+        if (!blobStoreType.equals("aws-s3")) {
+            try {
+                client.putBucketLifecycleConfiguration(b -> b
+                        .bucket(containerName)
+                        .lifecycleConfiguration(c -> c.rules(rule)));
+                Fail.failBecauseExceptionWasNotThrown(S3Exception.class);
+            } catch (S3Exception e) {
+                assertThat(e.awsErrorDetails().errorCode())
+                        .isEqualTo("NotImplemented");
+            }
+            try {
+                client.deleteBucketLifecycle(b -> b.bucket(containerName));
+                Fail.failBecauseExceptionWasNotThrown(S3Exception.class);
+            } catch (S3Exception e) {
+                assertThat(e.awsErrorDetails().errorCode())
+                        .isEqualTo("NotImplemented");
+            }
+            assertThat(client.listBuckets().buckets().stream()
+                    .anyMatch(b -> b.name().equals(containerName))).isTrue();
+            return;
+        }
+
+        try {
+            client.getBucketLifecycleConfiguration(
+                    b -> b.bucket(containerName));
+            Fail.failBecauseExceptionWasNotThrown(S3Exception.class);
+        } catch (S3Exception e) {
+            assertThat(e.statusCode()).isEqualTo(404);
+            assertThat(e.awsErrorDetails().errorCode())
+                    .isEqualTo("NoSuchLifecycleConfiguration");
+        }
+
+        client.putBucketLifecycleConfiguration(b -> b
+                .bucket(containerName)
+                .lifecycleConfiguration(c -> c.rules(rule)));
+        var rules = client.getBucketLifecycleConfiguration(
+                b -> b.bucket(containerName)).rules();
+        assertThat(rules).hasSize(1);
+        assertThat(rules.get(0).id()).isEqualTo("expire-logs");
+        assertThat(rules.get(0).filter().prefix()).isEqualTo("logs/");
+        assertThat(rules.get(0).expiration().days()).isEqualTo(30);
+
+        // The service reports which rule will expire an object it matches,
+        // and the header rides back through the proxy.  MiniStack keeps the
+        // rules but never reports an expiration, even asked directly.
+        if (blobStoreEndpoint.getPort() == LOCALSTACK_PORT) {
+            client.putObject(b -> b.bucket(containerName).key("logs/a"),
+                    RequestBody.fromBytes(BYTE_SOURCE.read()));
+            assertThat(client.headObject(b -> b.bucket(containerName)
+                    .key("logs/a")).expiration())
+                    .contains("rule-id=\"expire-logs\"");
+        }
+
+        client.deleteBucketLifecycle(b -> b.bucket(containerName));
+        assertThat(client.listBuckets().buckets().stream()
+                .anyMatch(b -> b.name().equals(containerName))).isTrue();
+        try {
+            client.getBucketLifecycleConfiguration(
+                    b -> b.bucket(containerName));
+            Fail.failBecauseExceptionWasNotThrown(S3Exception.class);
+        } catch (S3Exception e) {
+            assertThat(e.awsErrorDetails().errorCode())
+                    .isEqualTo("NoSuchLifecycleConfiguration");
         }
     }
 

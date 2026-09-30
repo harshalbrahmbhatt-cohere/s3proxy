@@ -53,6 +53,7 @@ public final class AwsHttpHeaders {
     public static final String DECODED_CONTENT_LENGTH =
             "x-amz-decoded-content-length";
     public static final String DELETE_MARKER = "x-amz-delete-marker";
+    public static final String EXPIRATION = "x-amz-expiration";
     public static final String IF_MATCH_LAST_MODIFIED_TIME =
             "x-amz-if-match-last-modified-time";
     public static final String IF_MATCH_SIZE = "x-amz-if-match-size";
@@ -79,6 +80,8 @@ public final class AwsHttpHeaders {
     public static final String STORAGE_CLASS = "x-amz-storage-class";
     public static final String TRAILER = "x-amz-trailer";
     public static final String TRANSFER_ENCODING = "x-amz-te";
+    public static final String TRANSITION_DEFAULT_MINIMUM_OBJECT_SIZE =
+            "x-amz-transition-default-minimum-object-size";
     public static final String USER_AGENT = "x-amz-user-agent";
     public static final String VERSION_ID = "x-amz-version-id";
 

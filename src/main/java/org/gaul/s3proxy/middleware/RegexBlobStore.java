@@ -257,6 +257,14 @@ public final class RegexBlobStore extends ForwardingBlobStore {
 
         return newName;
     }
+    // Disable lifecycle configuration: a rule's filters name keys as the
+    // client sees them, and the backend would match them against the
+    // rewritten names -- expiring objects no rule named, or none at all.
+    @Override
+    public boolean supportsBucketLifecycle() {
+        return false;
+    }
+
     // Disable versioning: the name rewrite does not extend to the
     // versioned operations.
     @Override

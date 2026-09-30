@@ -128,6 +128,7 @@ public final class SdkResponses {
                 .contentLength(response.contentLength())
                 .contentType(response.contentType())
                 .eTag(response.eTag())
+                .expiration(response.expiration())
                 .expires(response.expires())
                 .lastModified(response.lastModified())
                 .metadata(response.metadata())

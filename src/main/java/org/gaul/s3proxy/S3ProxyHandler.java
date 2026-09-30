@@ -113,6 +113,7 @@ import software.amazon.awssdk.checksums.SdkChecksum;
 import software.amazon.awssdk.core.ResponseInputStream;
 import software.amazon.awssdk.services.s3.model.Bucket;
 import software.amazon.awssdk.services.s3.model.BucketCannedACL;
+import software.amazon.awssdk.services.s3.model.BucketLifecycleConfiguration;
 import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
 import software.amazon.awssdk.services.s3.model.ChecksumAlgorithm;
 import software.amazon.awssdk.services.s3.model.ChecksumMode;
@@ -127,6 +128,7 @@ import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionRequest;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleRequest;
 import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
@@ -136,6 +138,7 @@ import software.amazon.awssdk.services.s3.model.DeletedObject;
 import software.amazon.awssdk.services.s3.model.GetBucketAclRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketAclResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketLocationRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningResponse;
@@ -149,6 +152,7 @@ import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
 import software.amazon.awssdk.services.s3.model.HeadBucketResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.LifecycleRule;
 import software.amazon.awssdk.services.s3.model.ListBucketsRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectVersionsResponse;
@@ -161,12 +165,14 @@ import software.amazon.awssdk.services.s3.model.MetadataDirective;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.NoSuchUploadException;
+import software.amazon.awssdk.services.s3.model.NoncurrentVersionTransition;
 import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
 import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.Owner;
 import software.amazon.awssdk.services.s3.model.Part;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionRequest;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
@@ -177,6 +183,8 @@ import software.amazon.awssdk.services.s3.model.ServerSideEncryptionByDefault;
 import software.amazon.awssdk.services.s3.model.ServerSideEncryptionConfiguration;
 import software.amazon.awssdk.services.s3.model.ServerSideEncryptionRule;
 import software.amazon.awssdk.services.s3.model.StorageClass;
+import software.amazon.awssdk.services.s3.model.Tag;
+import software.amazon.awssdk.services.s3.model.Transition;
 import software.amazon.awssdk.services.s3.model.UploadPartCopyRequest;
 import software.amazon.awssdk.services.s3.model.UploadPartCopyResponse;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
@@ -258,7 +266,6 @@ public class S3ProxyHandler {
             "cors",
             "inventory",
             "legal-hold",
-            "lifecycle",
             "logging",
             "metrics",
             "notification",
@@ -281,6 +288,17 @@ public class S3ProxyHandler {
      */
     private static final Set<String> UNSUPPORTED_WRITE_PARAMETERS = Set.of(
             "policy"
+    );
+    /**
+     * Subresources that name a bucket configuration and nothing on an
+     * object.  An object request carrying one would otherwise dispatch as
+     * the plain object operation -- a PUT storing the configuration as the
+     * object's body, a DELETE removing the object -- so it is refused
+     * before that happens, as it was while the subresource was unsupported
+     * outright.
+     */
+    private static final Set<String> BUCKET_ONLY_PARAMETERS = Set.of(
+            "lifecycle"
     );
     /** The parameters that replace response headers on a read. */
     private static final Set<String> RESPONSE_HEADER_OVERRIDES = Set.of(
@@ -334,6 +352,7 @@ public class S3ProxyHandler {
             AwsHttpHeaders.STORAGE_CLASS,
             AwsHttpHeaders.TRAILER,
             AwsHttpHeaders.TRANSFER_ENCODING,  // TODO: ignoring header
+            AwsHttpHeaders.TRANSITION_DEFAULT_MINIMUM_OBJECT_SIZE,
             AwsHttpHeaders.USER_AGENT
     );
     /** The request family checkServerSideEncryption vets, whole. */
@@ -844,11 +863,14 @@ public class S3ProxyHandler {
         }
 
         boolean writeMethod = method.equals("PUT") || method.equals("DELETE");
+        boolean objectRequest = path.length > 2 && !path[2].isEmpty();
         for (String parameter : Collections.list(
                 request.getParameterNames())) {
             if (UNSUPPORTED_PARAMETERS.contains(parameter) ||
                     (writeMethod &&
-                            UNSUPPORTED_WRITE_PARAMETERS.contains(parameter))) {
+                            UNSUPPORTED_WRITE_PARAMETERS.contains(parameter)) ||
+                    (objectRequest &&
+                            BUCKET_ONLY_PARAMETERS.contains(parameter))) {
                 logger.error("Unknown parameters {} with URI {}",
                         parameter, request.getRequestURI());
                 throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
@@ -1158,6 +1180,12 @@ public class S3ProxyHandler {
                             path[1]);
                     return;
                 }
+                if (request.getParameter("lifecycle") != null) {
+                    setOperation(ctx, S3Operation.DELETE_BUCKET_LIFECYCLE);
+                    handleDeleteBucketLifecycle(request, response, blobStore,
+                            path[1]);
+                    return;
+                }
                 // Bucket subresources that cannot be deleted must not fall
                 // through to DeleteBucket, which ignores the parameter and
                 // would remove the bucket itself.
@@ -1195,6 +1223,12 @@ public class S3ProxyHandler {
                 } else if (request.getParameter("encryption") != null) {
                     setOperation(ctx, S3Operation.GET_BUCKET_ENCRYPTION);
                     handleGetBucketEncryption(request, response, blobStore,
+                            path[1]);
+                    return;
+                } else if (request.getParameter("lifecycle") != null) {
+                    setOperation(ctx,
+                            S3Operation.GET_BUCKET_LIFECYCLE_CONFIGURATION);
+                    handleGetBucketLifecycle(request, response, blobStore,
                             path[1]);
                     return;
                 } else if (request.getParameter("location") != null) {
@@ -1290,6 +1324,13 @@ public class S3ProxyHandler {
                 if (request.getParameter("encryption") != null) {
                     setOperation(ctx, S3Operation.PUT_BUCKET_ENCRYPTION);
                     handleSetBucketEncryption(request, response, is, blobStore,
+                            path[1]);
+                    return;
+                }
+                if (request.getParameter("lifecycle") != null) {
+                    setOperation(ctx,
+                            S3Operation.PUT_BUCKET_LIFECYCLE_CONFIGURATION);
+                    handleSetBucketLifecycle(request, response, is, blobStore,
                             path[1]);
                     return;
                 }
@@ -1506,6 +1547,11 @@ public class S3ProxyHandler {
                 }
                 if (request.getParameter("encryption") != null) {
                     setOperation(ctx, S3Operation.GET_BUCKET_ENCRYPTION);
+                    throw new S3ProxyException(S3ErrorCode.ACCESS_DENIED);
+                }
+                if (request.getParameter("lifecycle") != null) {
+                    setOperation(ctx,
+                            S3Operation.GET_BUCKET_LIFECYCLE_CONFIGURATION);
                     throw new S3ProxyException(S3ErrorCode.ACCESS_DENIED);
                 }
                 if (request.getParameter("location") != null) {
@@ -2318,6 +2364,242 @@ public class S3ProxyHandler {
     }
 
     /**
+     * GetBucketLifecycleConfiguration.  A bucket without rules answers the
+     * store's NoSuchLifecycleConfiguration, as S3 does, rather than an empty
+     * configuration.
+     */
+    private void handleGetBucketLifecycle(HttpServletRequest request,
+            HttpServletResponse response, BlobStore blobStore,
+            String containerName) throws IOException {
+        if (!blobStore.supportsBucketLifecycle()) {
+            throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED,
+                    "Bucket lifecycle configuration is not supported.");
+        }
+        var result = blobStore.getBucketLifecycleConfiguration(
+                GetBucketLifecycleConfigurationRequest.builder()
+                        .bucket(containerName)
+                        .build());
+
+        response.setCharacterEncoding(UTF_8);
+        addCorsResponseHeader(request, response);
+        String minimumSize = result.transitionDefaultMinimumObjectSizeAsString();
+        if (minimumSize != null) {
+            response.addHeader(
+                    AwsHttpHeaders.TRANSITION_DEFAULT_MINIMUM_OBJECT_SIZE,
+                    minimumSize);
+        }
+        try (Writer writer = response.getWriter()) {
+            response.setContentType(XML_CONTENT_TYPE);
+            XMLStreamWriter xml = xmlOutputFactory.createXMLStreamWriter(
+                    writer);
+            xml.writeStartDocument();
+            xml.writeStartElement("LifecycleConfiguration");
+            xml.writeDefaultNamespace(AWS_XMLNS);
+            for (LifecycleRule rule : result.rules()) {
+                writeLifecycleRule(xml, rule);
+            }
+            xml.writeEndElement();
+            xml.flush();
+        } catch (XMLStreamException xse) {
+            throw new IOException(xse);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void writeLifecycleRule(XMLStreamWriter xml,
+            LifecycleRule rule) throws XMLStreamException {
+        xml.writeStartElement("Rule");
+        if (rule.id() != null) {
+            writeSimpleElement(xml, "ID", rule.id());
+        }
+        // The deprecated rule-level prefix answers as it was put, so a
+        // client that wrote one reads back what it wrote.
+        if (rule.prefix() != null) {
+            writeSimpleElement(xml, "Prefix", rule.prefix());
+        }
+        var filter = rule.filter();
+        if (filter != null) {
+            xml.writeStartElement("Filter");
+            if (filter.and() != null) {
+                xml.writeStartElement("And");
+                writeLifecycleConditions(xml, filter.and().prefix(),
+                        filter.and().tags(),
+                        filter.and().objectSizeGreaterThan(),
+                        filter.and().objectSizeLessThan());
+                xml.writeEndElement();
+            } else {
+                writeLifecycleConditions(xml, filter.prefix(),
+                        filter.tag() == null ? List.of() :
+                                List.of(filter.tag()),
+                        filter.objectSizeGreaterThan(),
+                        filter.objectSizeLessThan());
+            }
+            xml.writeEndElement();
+        }
+        writeSimpleElement(xml, "Status", rule.statusAsString());
+        var expiration = rule.expiration();
+        if (expiration != null) {
+            xml.writeStartElement("Expiration");
+            if (expiration.date() != null) {
+                writeSimpleElement(xml, "Date",
+                        ISO8601_MILLIS_FORMAT.format(expiration.date()));
+            }
+            if (expiration.days() != null) {
+                writeSimpleElement(xml, "Days",
+                        expiration.days().toString());
+            }
+            if (expiration.expiredObjectDeleteMarker() != null) {
+                writeSimpleElement(xml, "ExpiredObjectDeleteMarker",
+                        expiration.expiredObjectDeleteMarker().toString());
+            }
+            xml.writeEndElement();
+        }
+        for (Transition transition : rule.transitions()) {
+            xml.writeStartElement("Transition");
+            if (transition.date() != null) {
+                writeSimpleElement(xml, "Date",
+                        ISO8601_MILLIS_FORMAT.format(transition.date()));
+            }
+            if (transition.days() != null) {
+                writeSimpleElement(xml, "Days",
+                        transition.days().toString());
+            }
+            if (transition.storageClassAsString() != null) {
+                writeSimpleElement(xml, "StorageClass",
+                        transition.storageClassAsString());
+            }
+            xml.writeEndElement();
+        }
+        var noncurrentExpiration = rule.noncurrentVersionExpiration();
+        if (noncurrentExpiration != null) {
+            xml.writeStartElement("NoncurrentVersionExpiration");
+            if (noncurrentExpiration.noncurrentDays() != null) {
+                writeSimpleElement(xml, "NoncurrentDays",
+                        noncurrentExpiration.noncurrentDays().toString());
+            }
+            if (noncurrentExpiration.newerNoncurrentVersions() != null) {
+                writeSimpleElement(xml, "NewerNoncurrentVersions",
+                        noncurrentExpiration.newerNoncurrentVersions()
+                                .toString());
+            }
+            xml.writeEndElement();
+        }
+        for (NoncurrentVersionTransition transition :
+                rule.noncurrentVersionTransitions()) {
+            xml.writeStartElement("NoncurrentVersionTransition");
+            if (transition.noncurrentDays() != null) {
+                writeSimpleElement(xml, "NoncurrentDays",
+                        transition.noncurrentDays().toString());
+            }
+            if (transition.newerNoncurrentVersions() != null) {
+                writeSimpleElement(xml, "NewerNoncurrentVersions",
+                        transition.newerNoncurrentVersions().toString());
+            }
+            if (transition.storageClassAsString() != null) {
+                writeSimpleElement(xml, "StorageClass",
+                        transition.storageClassAsString());
+            }
+            xml.writeEndElement();
+        }
+        var abort = rule.abortIncompleteMultipartUpload();
+        if (abort != null && abort.daysAfterInitiation() != null) {
+            xml.writeStartElement("AbortIncompleteMultipartUpload");
+            writeSimpleElement(xml, "DaysAfterInitiation",
+                    abort.daysAfterInitiation().toString());
+            xml.writeEndElement();
+        }
+        xml.writeEndElement();
+    }
+
+    /** The conditions a filter holds, alone or under its And. */
+    private static void writeLifecycleConditions(XMLStreamWriter xml,
+            @Nullable String prefix, List<Tag> tags,
+            @Nullable Long objectSizeGreaterThan,
+            @Nullable Long objectSizeLessThan) throws XMLStreamException {
+        if (prefix != null) {
+            writeSimpleElement(xml, "Prefix", prefix);
+        }
+        for (Tag tag : tags) {
+            xml.writeStartElement("Tag");
+            writeSimpleElement(xml, "Key", tag.key());
+            writeSimpleElement(xml, "Value", tag.value());
+            xml.writeEndElement();
+        }
+        if (objectSizeGreaterThan != null) {
+            writeSimpleElement(xml, "ObjectSizeGreaterThan",
+                    objectSizeGreaterThan.toString());
+        }
+        if (objectSizeLessThan != null) {
+            writeSimpleElement(xml, "ObjectSizeLessThan",
+                    objectSizeLessThan.toString());
+        }
+    }
+
+    /**
+     * PutBucketLifecycleConfiguration.  S3 refuses the request without a
+     * body checksum, and so does this.  The configuration is vetted for what
+     * every backend would have to refuse -- a rule without an action, an ID
+     * used twice, a count that is not a positive number -- so that each
+     * store sees only a configuration S3 itself would take, and judges
+     * whether it can carry it out.
+     */
+    private void handleSetBucketLifecycle(HttpServletRequest request,
+            HttpServletResponse response, InputStream is, BlobStore blobStore,
+            String containerName) throws IOException {
+        if (!blobStore.supportsBucketLifecycle()) {
+            throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED,
+                    "Bucket lifecycle configuration is not supported.");
+        }
+        // Bound the buffered body: a configuration holds at most a thousand
+        // rules, but the request is otherwise attacker-controlled.
+        byte[] body = ByteStreams.limit(is, v4MaxNonChunkedRequestSize + 1)
+                .readAllBytes();
+        if (body.length == v4MaxNonChunkedRequestSize + 1) {
+            throw new S3ProxyException(S3ErrorCode.MAX_MESSAGE_LENGTH_EXCEEDED);
+        }
+        validateRequiredBodyChecksum(request, body);
+        var configuration = readXmlBody(body,
+                LifecycleConfigurationRequest.class);
+        var rules = LifecycleConfigurations.toRules(configuration);
+
+        var putRequest = PutBucketLifecycleConfigurationRequest.builder()
+                .bucket(containerName)
+                .lifecycleConfiguration(BucketLifecycleConfiguration.builder()
+                        .rules(rules)
+                        .build());
+        String minimumSize = request.getHeader(
+                AwsHttpHeaders.TRANSITION_DEFAULT_MINIMUM_OBJECT_SIZE);
+        if (minimumSize != null) {
+            putRequest.transitionDefaultMinimumObjectSize(minimumSize);
+        }
+        var result = blobStore.putBucketLifecycleConfiguration(
+                putRequest.build());
+        String appliedSize = result.transitionDefaultMinimumObjectSizeAsString();
+        if (appliedSize != null) {
+            response.addHeader(
+                    AwsHttpHeaders.TRANSITION_DEFAULT_MINIMUM_OBJECT_SIZE,
+                    appliedSize);
+        }
+        addCorsResponseHeader(request, response);
+    }
+
+    /** DeleteBucketLifecycle, idempotent the way S3's is: 204 either way. */
+    private void handleDeleteBucketLifecycle(HttpServletRequest request,
+            HttpServletResponse response, BlobStore blobStore,
+            String containerName) {
+        if (!blobStore.supportsBucketLifecycle()) {
+            throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED,
+                    "Bucket lifecycle configuration is not supported.");
+        }
+        var unused = blobStore.deleteBucketLifecycle(
+                DeleteBucketLifecycleRequest.builder()
+                        .bucket(containerName)
+                        .build());
+        response.setStatus(HttpServletResponse.SC_NO_CONTENT);
+        addCorsResponseHeader(request, response);
+    }
+
+    /**
      * One row of the interleaved versions listing: an object version, or a
      * delete marker when {@code deleteMarker} is set.
      */
@@ -3102,6 +3384,20 @@ public class S3ProxyHandler {
         response.setStatus(HttpServletResponse.SC_NO_CONTENT);
     }
 
+    /**
+     * x-amz-expiration: when the bucket's lifecycle rules will expire the
+     * object, and which rule does it, as the store reports it.  The value is
+     * relayed verbatim -- S3 spells it expiry-date="...", rule-id="..." --
+     * and a store that reports nothing leaves the header off, as S3 does for
+     * an object no rule matches.
+     */
+    private static void addExpirationHeader(HttpServletResponse response,
+            @Nullable String expiration) {
+        if (expiration != null) {
+            response.addHeader(AwsHttpHeaders.EXPIRATION, expiration);
+        }
+    }
+
     private static void addDeleteResultHeaders(HttpServletResponse response,
             DeleteObjectResponse result) {
         String versionId = result.versionId();
@@ -3115,10 +3411,11 @@ public class S3ProxyHandler {
 
     /**
      * Validate the request body against Content-MD5 (legacy) or any
-     * x-amz-checksum-* header (modern AWS SDKs).  Throws if no checksum is
-     * present or if validation fails.
+     * x-amz-checksum-* header (modern AWS SDKs), for the requests S3 refuses
+     * without one -- DeleteObjects and PutBucketLifecycleConfiguration.
+     * Throws if no checksum is present or if validation fails.
      */
-    private static void validateMultiBlobRemoveChecksum(
+    private static void validateRequiredBodyChecksum(
             HttpServletRequest request, byte[] body) {
         String contentMD5 = request.getHeader(HttpHeaders.CONTENT_MD5);
         if (contentMD5 != null) {
@@ -3160,7 +3457,7 @@ public class S3ProxyHandler {
         if (body.length == v4MaxNonChunkedRequestSize + 1) {
             throw new S3ProxyException(S3ErrorCode.MAX_MESSAGE_LENGTH_EXCEEDED);
         }
-        validateMultiBlobRemoveChecksum(request, body);
+        validateRequiredBodyChecksum(request, body);
         DeleteMultipleObjectsRequest dmor = readXmlBody(
                 body, DeleteMultipleObjectsRequest.class);
         if (dmor.objects() == null) {
@@ -4253,6 +4550,7 @@ public class S3ProxyHandler {
         if (destVersionId != null) {
             response.addHeader(AwsHttpHeaders.VERSION_ID, destVersionId);
         }
+        addExpirationHeader(response, copyResult.expiration());
         addServerSideEncryptionHeaders(response,
                 copyResult.serverSideEncryptionAsString(),
                 copyResult.ssekmsKeyId(),
@@ -4492,6 +4790,7 @@ public class S3ProxyHandler {
         if (versionId != null) {
             response.addHeader(AwsHttpHeaders.VERSION_ID, versionId);
         }
+        addExpirationHeader(response, result.expiration());
         addServerSideEncryptionHeaders(response,
                 result.serverSideEncryptionAsString(), result.ssekmsKeyId(),
                 result.ssekmsEncryptionContext(), result.bucketKeyEnabled(),
@@ -4975,6 +5274,7 @@ public class S3ProxyHandler {
         if (versionId != null) {
             response.addHeader(AwsHttpHeaders.VERSION_ID, versionId);
         }
+        addExpirationHeader(response, result.expiration());
         addServerSideEncryptionHeaders(response,
                 result.serverSideEncryptionAsString(), result.ssekmsKeyId(),
                 result.ssekmsEncryptionContext(), result.bucketKeyEnabled(),
@@ -5506,6 +5806,11 @@ public class S3ProxyHandler {
         if (completedResult != null && completedResult.versionId() != null) {
             response.addHeader(AwsHttpHeaders.VERSION_ID,
                     completedResult.versionId());
+        }
+        // Like the version, the expiration is a header, and so only the
+        // synchronous completion can report it.
+        if (completedResult != null) {
+            addExpirationHeader(response, completedResult.expiration());
         }
         // The asynchronous completion below commits the response before the
         // outcome is known, so only the synchronous path can report the
@@ -6398,6 +6703,7 @@ public class S3ProxyHandler {
         if (versionId != null) {
             response.addHeader(AwsHttpHeaders.VERSION_ID, versionId);
         }
+        addExpirationHeader(response, metadata.expiration());
         String storageClass = metadata.storageClassAsString();
         if (storageClass != null) {
             response.addHeader(AwsHttpHeaders.STORAGE_CLASS, storageClass);

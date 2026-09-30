@@ -276,6 +276,13 @@ final class NullBlobStore extends ForwardingBlobStore {
             closed = true;
         }
     }
+    // Disable lifecycle configuration: the backend holds empty stubs, so it
+    // would judge a rule's size filters against sizes the client never sees.
+    @Override
+    public boolean supportsBucketLifecycle() {
+        return false;
+    }
+
     // Disable versioning: versioned reads would return the stored stub
     // rather than fake content.
     @Override

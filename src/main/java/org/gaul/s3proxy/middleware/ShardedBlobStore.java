@@ -61,12 +61,16 @@ import software.amazon.awssdk.services.s3.model.CreateBucketResponse;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleRequest;
+import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketAclRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketAclResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.GetBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectAclRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectAclResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
@@ -83,6 +87,8 @@ import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.Part;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionResponse;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationRequest;
+import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationResponse;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Object;
@@ -419,6 +425,37 @@ final class ShardedBlobStore extends ForwardingBlobStore {
             DeleteBucketEncryptionRequest request) {
         if (!this.buckets.containsKey(request.bucket())) {
             return this.delegate().deleteBucketEncryption(request);
+        }
+        throw new UnsupportedOperationException("sharded bucket");
+    }
+
+    // A sharded bucket spreads its keys over several backend buckets, and
+    // its rules would have to be kept alike on every one of them.
+    @Override
+    public GetBucketLifecycleConfigurationResponse
+            getBucketLifecycleConfiguration(
+                    GetBucketLifecycleConfigurationRequest request) {
+        if (!this.buckets.containsKey(request.bucket())) {
+            return this.delegate().getBucketLifecycleConfiguration(request);
+        }
+        throw new UnsupportedOperationException("sharded bucket");
+    }
+
+    @Override
+    public PutBucketLifecycleConfigurationResponse
+            putBucketLifecycleConfiguration(
+                    PutBucketLifecycleConfigurationRequest request) {
+        if (!this.buckets.containsKey(request.bucket())) {
+            return this.delegate().putBucketLifecycleConfiguration(request);
+        }
+        throw new UnsupportedOperationException("sharded bucket");
+    }
+
+    @Override
+    public DeleteBucketLifecycleResponse deleteBucketLifecycle(
+            DeleteBucketLifecycleRequest request) {
+        if (!this.buckets.containsKey(request.bucket())) {
+            return this.delegate().deleteBucketLifecycle(request);
         }
         throw new UnsupportedOperationException("sharded bucket");
     }
