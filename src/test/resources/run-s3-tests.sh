@@ -95,7 +95,6 @@ tags='not appendobject'\
 ' and not iam_tenant'\
 ' and not lifecycle'\
 ' and not object_attributes'\
-' and not object_lock'\
 ' and not object_ownership'\
 ' and not policy'\
 ' and not policy_status'\
@@ -122,6 +121,17 @@ enable_sse_tests() {
 backend=""
 # A -k expression for tests a marker cannot describe, empty for most lanes.
 deselect_by_name=""
+# Object lock is answered only by the aws-s3 backend, and its tests run only
+# on the LocalStack lane; every other store refuses the whole family with
+# 501.  MiniStack reaches the same backend but keeps one retention per key
+# rather than per version, so a version that was never locked reports
+# another's retention and the suite's cleanup gives up on the bucket,
+# failing every test after it.  It also lets versioning be suspended on a
+# bucket with object lock, which S3 refuses.  Both reproduce against
+# MiniStack with no proxy in between.
+if [[ "${S3PROXY_CONF}" != s3proxy-localstack*.conf ]]; then
+    tags="${tags} and not object_lock"
+fi
 if [ "${S3PROXY_CONF}" = "s3proxy-azurite.conf" ]; then
     backend="azureblob"
 elif [ "${S3PROXY_CONF}" = "s3proxy-fake-gcs-server.conf" ]; then
@@ -165,7 +175,20 @@ elif [[ "${S3PROXY_CONF}" == s3proxy-localstack*.conf ]]; then
     # this passes depends on whether the threads overlap.  Neither expecting
     # a pass nor expecting a failure describes it, which is what a marker
     # would have to do.
-    deselect_by_name="not test_versioning_concurrent_multi_object_delete"
+    #
+    # This one passes, and then its bucket outlives teardown.  It moves a
+    # GOVERNANCE retention to COMPLIANCE with a sub-second retain-until
+    # date; LocalStack enforces that date past the second but reports it
+    # truncated to the second, so the suite waits until the reported time,
+    # deletes once, and is refused.  The bucket left behind then fails the
+    # setup of the tests after it.  Its sibling without the bypass header
+    # fails the same way and also fails its assertion: LocalStack accepts
+    # GOVERNANCE to COMPLIANCE unbypassed, where S3 refuses it.  A marker
+    # would describe the assertion but not the bucket it leaves behind.
+    # Both reproduce against LocalStack with no proxy in between.
+    deselect_by_name="not test_versioning_concurrent_multi_object_delete"\
+" and not test_object_lock_changing_mode_from_governance_with_bypass"\
+" and not test_object_lock_changing_mode_from_governance_without_bypass"
 elif [ "${S3PROXY_CONF}" = "s3proxy-filesystem.conf" ] ||
         [ "${S3PROXY_CONF}" = "s3proxy.conf" ]; then
     # s3proxy.conf defaults to the transient backend.
