@@ -58,6 +58,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -125,6 +126,7 @@ import software.amazon.awssdk.services.s3.model.CopyObjectRequest;
 import software.amazon.awssdk.services.s3.model.CopyObjectResponse;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.CreateMultipartUploadRequest;
+import software.amazon.awssdk.services.s3.model.DefaultRetention;
 import software.amazon.awssdk.services.s3.model.Delete;
 import software.amazon.awssdk.services.s3.model.DeleteBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
@@ -141,8 +143,11 @@ import software.amazon.awssdk.services.s3.model.GetBucketVersioningRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketVersioningResponse;
 import software.amazon.awssdk.services.s3.model.GetObjectAclRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectAclResponse;
+import software.amazon.awssdk.services.s3.model.GetObjectLegalHoldRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectLockConfigurationRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
+import software.amazon.awssdk.services.s3.model.GetObjectRetentionRequest;
 import software.amazon.awssdk.services.s3.model.Grant;
 import software.amazon.awssdk.services.s3.model.Grantee;
 import software.amazon.awssdk.services.s3.model.HeadBucketRequest;
@@ -163,13 +168,24 @@ import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.NoSuchUploadException;
 import software.amazon.awssdk.services.s3.model.ObjectCannedACL;
 import software.amazon.awssdk.services.s3.model.ObjectIdentifier;
+import software.amazon.awssdk.services.s3.model.ObjectLockConfiguration;
+import software.amazon.awssdk.services.s3.model.ObjectLockEnabled;
+import software.amazon.awssdk.services.s3.model.ObjectLockLegalHold;
+import software.amazon.awssdk.services.s3.model.ObjectLockLegalHoldStatus;
+import software.amazon.awssdk.services.s3.model.ObjectLockMode;
+import software.amazon.awssdk.services.s3.model.ObjectLockRetention;
+import software.amazon.awssdk.services.s3.model.ObjectLockRetentionMode;
+import software.amazon.awssdk.services.s3.model.ObjectLockRule;
 import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.Owner;
 import software.amazon.awssdk.services.s3.model.Part;
 import software.amazon.awssdk.services.s3.model.PutBucketEncryptionRequest;
 import software.amazon.awssdk.services.s3.model.PutBucketVersioningRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectLegalHoldRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectLockConfigurationRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectResponse;
+import software.amazon.awssdk.services.s3.model.PutObjectRetentionRequest;
 import software.amazon.awssdk.services.s3.model.S3Error;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.S3Object;
@@ -257,19 +273,16 @@ public class S3ProxyHandler {
             "analytics",
             "cors",
             "inventory",
-            "legal-hold",
             "lifecycle",
             "logging",
             "metrics",
             "notification",
-            "object-lock",
             "ownershipControls",
             "policyStatus",
             "publicAccessBlock",
             "replication",
             "requestPayment",
             "restore",
-            "retention",
             "tagging",
             "torrent",
             "website"
@@ -296,6 +309,8 @@ public class S3ProxyHandler {
             AwsHttpHeaders.ACL,
             AwsHttpHeaders.API_VERSION,
             AwsHttpHeaders.BUCKET_OBJECT_LOCK_ENABLED,
+            AwsHttpHeaders.BUCKET_OBJECT_LOCK_TOKEN,
+            AwsHttpHeaders.BYPASS_GOVERNANCE_RETENTION,
             AwsHttpHeaders.CHECKSUM_ALGORITHM,
             AwsHttpHeaders.CHECKSUM_CRC32,
             AwsHttpHeaders.CHECKSUM_CRC32C,
@@ -323,6 +338,9 @@ public class S3ProxyHandler {
             AwsHttpHeaders.METADATA_DIRECTIVE,
             AwsHttpHeaders.MFA,
             AwsHttpHeaders.OBJECT_ATTRIBUTES,
+            AwsHttpHeaders.OBJECT_LOCK_LEGAL_HOLD,
+            AwsHttpHeaders.OBJECT_LOCK_MODE,
+            AwsHttpHeaders.OBJECT_LOCK_RETAIN_UNTIL_DATE,
             AwsHttpHeaders.SDK_CHECKSUM_ALGORITHM,  // TODO: ignoring header
             AwsHttpHeaders.SERVER_SIDE_ENCRYPTION,
             AwsHttpHeaders.SERVER_SIDE_ENCRYPTION_AWS_KMS_KEY_ID,
@@ -336,6 +354,15 @@ public class S3ProxyHandler {
             AwsHttpHeaders.TRANSFER_ENCODING,  // TODO: ignoring header
             AwsHttpHeaders.USER_AGENT
     );
+    /** The object lock request headers an unsigned request may not send. */
+    private static final List<String> OBJECT_LOCK_HEADERS = List.of(
+            AwsHttpHeaders.BYPASS_GOVERNANCE_RETENTION,
+            AwsHttpHeaders.OBJECT_LOCK_LEGAL_HOLD,
+            AwsHttpHeaders.OBJECT_LOCK_MODE,
+            AwsHttpHeaders.OBJECT_LOCK_RETAIN_UNTIL_DATE);
+    /** The object lock subresources, which only a lock store answers. */
+    private static final List<String> OBJECT_LOCK_PARAMETERS = List.of(
+            "legal-hold", "object-lock", "retention");
     /** The request family checkServerSideEncryption vets, whole. */
     private static final List<String> SERVER_SIDE_ENCRYPTION_HEADERS =
             List.of(
@@ -1138,6 +1165,7 @@ public class S3ProxyHandler {
 
         checkVersionId(request, blobStore);
         checkServerSideEncryption(request, blobStore);
+        checkObjectLock(request, blobStore, path);
 
         if (path.length > 2) {
             checkReservedBlobName(path[2]);
@@ -1162,7 +1190,8 @@ public class S3ProxyHandler {
                 // through to DeleteBucket, which ignores the parameter and
                 // would remove the bucket itself.
                 if (request.getParameter("versioning") != null ||
-                        request.getParameter("versions") != null) {
+                        request.getParameter("versions") != null ||
+                        request.getParameter("object-lock") != null) {
                     throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
                 }
                 setOperation(ctx, S3Operation.DELETE_BUCKET);
@@ -1174,6 +1203,12 @@ public class S3ProxyHandler {
                         path[1], path[2], uploadId);
                 return;
             } else {
+                // Retention and legal hold have no delete: falling through
+                // would remove the object they describe.
+                if (request.getParameter("retention") != null ||
+                        request.getParameter("legal-hold") != null) {
+                    throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
+                }
                 setOperation(ctx, S3Operation.DELETE_OBJECT);
                 handleBlobRemove(request, response, blobStore, path[1],
                         path[2]);
@@ -1201,6 +1236,12 @@ public class S3ProxyHandler {
                     setOperation(ctx, S3Operation.GET_BUCKET_LOCATION);
                     handleContainerLocation(request, response, blobStore,
                             path[1]);
+                    return;
+                } else if (request.getParameter("object-lock") != null) {
+                    setOperation(ctx,
+                            S3Operation.GET_OBJECT_LOCK_CONFIGURATION);
+                    handleGetObjectLockConfiguration(request, response,
+                            blobStore, path[1]);
                     return;
                 } else if (request.getParameter("policy") != null) {
                     setOperation(ctx, S3Operation.GET_BUCKET_POLICY);
@@ -1234,6 +1275,16 @@ public class S3ProxyHandler {
                 } else if (request.getParameter("attributes") != null) {
                     setOperation(ctx, S3Operation.GET_OBJECT_ATTRIBUTES);
                     handleGetObjectAttributes(request, response, blobStore,
+                            path[1], path[2]);
+                    return;
+                } else if (request.getParameter("legal-hold") != null) {
+                    setOperation(ctx, S3Operation.GET_OBJECT_LEGAL_HOLD);
+                    handleGetObjectLegalHold(request, response, blobStore,
+                            path[1], path[2]);
+                    return;
+                } else if (request.getParameter("retention") != null) {
+                    setOperation(ctx, S3Operation.GET_OBJECT_RETENTION);
+                    handleGetObjectRetention(request, response, blobStore,
                             path[1], path[2]);
                     return;
                 } else if (uploadId != null) {
@@ -1299,6 +1350,13 @@ public class S3ProxyHandler {
                             path[1]);
                     return;
                 }
+                if (request.getParameter("object-lock") != null) {
+                    setOperation(ctx,
+                            S3Operation.PUT_OBJECT_LOCK_CONFIGURATION);
+                    handleSetObjectLockConfiguration(request, response, is,
+                            blobStore, path[1]);
+                    return;
+                }
                 setOperation(ctx, S3Operation.CREATE_BUCKET);
                 handleContainerCreate(request, response, is, blobStore,
                         path[1]);
@@ -1324,6 +1382,18 @@ public class S3ProxyHandler {
                     setOperation(ctx, S3Operation.PUT_OBJECT_ACL);
                     handleSetBlobAcl(request, response, is, blobStore, path[1],
                             path[2]);
+                    return;
+                }
+                if (request.getParameter("legal-hold") != null) {
+                    setOperation(ctx, S3Operation.PUT_OBJECT_LEGAL_HOLD);
+                    handleSetObjectLegalHold(request, response, is, blobStore,
+                            path[1], path[2]);
+                    return;
+                }
+                if (request.getParameter("retention") != null) {
+                    setOperation(ctx, S3Operation.PUT_OBJECT_RETENTION);
+                    handleSetObjectRetention(request, response, is, blobStore,
+                            path[1], path[2]);
                     return;
                 }
                 setOperation(ctx, S3Operation.PUT_OBJECT);
@@ -1466,9 +1536,24 @@ public class S3ProxyHandler {
         // and be answered success, the plaintext stored, which is what this
         // refusal exists to prevent.
         checkServerSideEncryption(request, blobStore);
+        checkObjectLock(request, blobStore, path);
 
         if (path.length > 2) {
             checkReservedBlobName(path[2]);
+        }
+
+        // Object lock configuration, retention and legal hold answer to
+        // permissions no ACL grant carries, and the bypass header asks for
+        // one, so none of them is answered unsigned.
+        for (String parameter : OBJECT_LOCK_PARAMETERS) {
+            if (request.getParameter(parameter) != null) {
+                throw new S3ProxyException(S3ErrorCode.ACCESS_DENIED);
+            }
+        }
+        for (String header : OBJECT_LOCK_HEADERS) {
+            if (request.getHeader(header) != null) {
+                throw new S3ProxyException(S3ErrorCode.ACCESS_DENIED);
+            }
         }
 
         switch (method) {
@@ -2176,6 +2261,422 @@ public class S3ProxyHandler {
     }
 
     /**
+     * GetObjectLockConfiguration.  The store answers, a bucket without
+     * object lock included: S3 spells that
+     * ObjectLockConfigurationNotFoundError, which the store raises.
+     */
+    private void handleGetObjectLockConfiguration(HttpServletRequest request,
+            HttpServletResponse response, BlobStore blobStore,
+            String containerName) throws IOException {
+        ObjectLockConfiguration configuration = blobStore
+                .getObjectLockConfiguration(
+                        GetObjectLockConfigurationRequest.builder()
+                                .bucket(containerName)
+                                .build())
+                .objectLockConfiguration();
+
+        response.setCharacterEncoding(UTF_8);
+        addCorsResponseHeader(request, response);
+        try (Writer writer = response.getWriter()) {
+            response.setContentType(XML_CONTENT_TYPE);
+            XMLStreamWriter xml = xmlOutputFactory.createXMLStreamWriter(
+                    writer);
+            xml.writeStartDocument();
+            xml.writeStartElement("ObjectLockConfiguration");
+            xml.writeDefaultNamespace(AWS_XMLNS);
+            if (configuration != null) {
+                if (configuration.objectLockEnabled() != null) {
+                    writeSimpleElement(xml, "ObjectLockEnabled",
+                            configuration.objectLockEnabledAsString());
+                }
+                DefaultRetention retention = configuration.rule() == null ?
+                        null : configuration.rule().defaultRetention();
+                if (retention != null) {
+                    xml.writeStartElement("Rule");
+                    xml.writeStartElement("DefaultRetention");
+                    if (retention.mode() != null) {
+                        writeSimpleElement(xml, "Mode",
+                                retention.modeAsString());
+                    }
+                    if (retention.days() != null) {
+                        writeSimpleElement(xml, "Days",
+                                retention.days().toString());
+                    }
+                    if (retention.years() != null) {
+                        writeSimpleElement(xml, "Years",
+                                retention.years().toString());
+                    }
+                    xml.writeEndElement();
+                    xml.writeEndElement();
+                }
+            }
+            xml.writeEndElement();
+            xml.flush();
+        } catch (XMLStreamException xse) {
+            throw new IOException(xse);
+        }
+    }
+
+    private void handleSetObjectLockConfiguration(HttpServletRequest request,
+            HttpServletResponse response, InputStream is, BlobStore blobStore,
+            String containerName) throws IOException {
+        byte[] body = readBoundedBody(is);
+        // S3 asks every object lock write to prove its body intact.
+        validateMultiBlobRemoveChecksum(request, body);
+        ObjectLockConfigurationRequest olcr = readXmlBody(body,
+                ObjectLockConfigurationRequest.class);
+        // Enabled is the only state the configuration names: object lock
+        // cannot be turned off once on.
+        if (!"Enabled".equals(olcr.objectLockEnabled())) {
+            throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+        }
+        var configuration = ObjectLockConfiguration.builder()
+                .objectLockEnabled(ObjectLockEnabled.ENABLED);
+        if (olcr.rule() != null) {
+            var dr = olcr.rule().defaultRetention();
+            if (dr == null) {
+                throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+            }
+            // A default event hold is newer than the SDK the proxy speaks,
+            // so it cannot be passed through; storing the rest without it
+            // would answer success to a hold nobody applies.
+            if (dr.defaultEventHold() != null) {
+                throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED,
+                        "DefaultEventHold is not supported.");
+            }
+            ObjectLockRetentionMode mode = parseRetentionMode(dr.mode());
+            if (mode == null) {
+                throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+            }
+            // Exactly one of Days and Years, and a positive one: S3 refuses
+            // both, neither, and a period that has already run out.
+            if ((dr.days() == null) == (dr.years() == null)) {
+                throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+            }
+            Integer period = dr.days() != null ? dr.days() : dr.years();
+            if (period <= 0) {
+                throw new S3ProxyException(
+                        S3ErrorCode.INVALID_RETENTION_PERIOD);
+            }
+            configuration.rule(ObjectLockRule.builder()
+                    .defaultRetention(DefaultRetention.builder()
+                            .mode(mode.toString())
+                            .days(dr.days())
+                            .years(dr.years())
+                            .build())
+                    .build());
+        }
+        // The token S3 once required to enable object lock on an existing
+        // bucket; only the service can judge it, so it passes through.
+        var unused = blobStore.putObjectLockConfiguration(
+                PutObjectLockConfigurationRequest.builder()
+                        .bucket(containerName)
+                        .objectLockConfiguration(configuration.build())
+                        .token(request.getHeader(
+                                AwsHttpHeaders.BUCKET_OBJECT_LOCK_TOKEN))
+                        .build());
+        addCorsResponseHeader(request, response);
+    }
+
+    private void handleGetObjectRetention(HttpServletRequest request,
+            HttpServletResponse response, BlobStore blobStore,
+            String containerName, String blobName) throws IOException {
+        ObjectLockRetention retention = blobStore.getObjectRetention(
+                GetObjectRetentionRequest.builder()
+                        .bucket(containerName)
+                        .key(blobName)
+                        .versionId(request.getParameter("versionId"))
+                        .build())
+                .retention();
+
+        response.setCharacterEncoding(UTF_8);
+        addCorsResponseHeader(request, response);
+        try (Writer writer = response.getWriter()) {
+            response.setContentType(XML_CONTENT_TYPE);
+            XMLStreamWriter xml = xmlOutputFactory.createXMLStreamWriter(
+                    writer);
+            xml.writeStartDocument();
+            xml.writeStartElement("Retention");
+            xml.writeDefaultNamespace(AWS_XMLNS);
+            if (retention != null) {
+                if (retention.mode() != null) {
+                    writeSimpleElement(xml, "Mode",
+                            retention.modeAsString());
+                }
+                if (retention.retainUntilDate() != null) {
+                    writeSimpleElement(xml, "RetainUntilDate",
+                            ISO8601_MILLIS_FORMAT.format(
+                                    retention.retainUntilDate()));
+                }
+            }
+            xml.writeEndElement();
+            xml.flush();
+        } catch (XMLStreamException xse) {
+            throw new IOException(xse);
+        }
+    }
+
+    private void handleSetObjectRetention(HttpServletRequest request,
+            HttpServletResponse response, InputStream is, BlobStore blobStore,
+            String containerName, String blobName) throws IOException {
+        byte[] body = readBoundedBody(is);
+        validateMultiBlobRemoveChecksum(request, body);
+        RetentionRequest rr = readXmlBody(body, RetentionRequest.class);
+        // An empty Retention removes it, which only GOVERNANCE under the
+        // bypass header allows; the store judges that against what the
+        // version already carries.
+        var retention = ObjectLockRetention.builder();
+        if (rr.mode() != null || rr.retainUntilDate() != null) {
+            ObjectLockRetentionMode mode = parseRetentionMode(rr.mode());
+            if (mode == null || rr.retainUntilDate() == null) {
+                throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+            }
+            Instant until = parseRetainUntilDate(rr.retainUntilDate());
+            retention.mode(mode).retainUntilDate(until);
+        }
+        var unused = blobStore.putObjectRetention(
+                PutObjectRetentionRequest.builder()
+                        .bucket(containerName)
+                        .key(blobName)
+                        .versionId(request.getParameter("versionId"))
+                        .retention(retention.build())
+                        .bypassGovernanceRetention(
+                                parseBypassGovernanceRetention(request))
+                        .build());
+        addCorsResponseHeader(request, response);
+    }
+
+    private void handleGetObjectLegalHold(HttpServletRequest request,
+            HttpServletResponse response, BlobStore blobStore,
+            String containerName, String blobName) throws IOException {
+        ObjectLockLegalHold legalHold = blobStore.getObjectLegalHold(
+                GetObjectLegalHoldRequest.builder()
+                        .bucket(containerName)
+                        .key(blobName)
+                        .versionId(request.getParameter("versionId"))
+                        .build())
+                .legalHold();
+
+        response.setCharacterEncoding(UTF_8);
+        addCorsResponseHeader(request, response);
+        try (Writer writer = response.getWriter()) {
+            response.setContentType(XML_CONTENT_TYPE);
+            XMLStreamWriter xml = xmlOutputFactory.createXMLStreamWriter(
+                    writer);
+            xml.writeStartDocument();
+            xml.writeStartElement("LegalHold");
+            xml.writeDefaultNamespace(AWS_XMLNS);
+            if (legalHold != null && legalHold.status() != null) {
+                writeSimpleElement(xml, "Status", legalHold.statusAsString());
+            }
+            xml.writeEndElement();
+            xml.flush();
+        } catch (XMLStreamException xse) {
+            throw new IOException(xse);
+        }
+    }
+
+    private void handleSetObjectLegalHold(HttpServletRequest request,
+            HttpServletResponse response, InputStream is, BlobStore blobStore,
+            String containerName, String blobName) throws IOException {
+        byte[] body = readBoundedBody(is);
+        validateMultiBlobRemoveChecksum(request, body);
+        LegalHoldRequest lhr = readXmlBody(body, LegalHoldRequest.class);
+        ObjectLockLegalHoldStatus status = parseLegalHoldStatus(
+                lhr.status());
+        if (status == null) {
+            throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+        }
+        var unused = blobStore.putObjectLegalHold(
+                PutObjectLegalHoldRequest.builder()
+                        .bucket(containerName)
+                        .key(blobName)
+                        .versionId(request.getParameter("versionId"))
+                        .legalHold(ObjectLockLegalHold.builder()
+                                .status(status)
+                                .build())
+                        .build());
+        addCorsResponseHeader(request, response);
+    }
+
+    /**
+     * Reads a configuration body, bounded: the documents are a few
+     * elements, but the request is otherwise attacker-controlled.
+     */
+    private byte[] readBoundedBody(InputStream is) throws IOException {
+        byte[] body = ByteStreams.limit(is, v4MaxNonChunkedRequestSize + 1)
+                .readAllBytes();
+        if (body.length == v4MaxNonChunkedRequestSize + 1) {
+            throw new S3ProxyException(S3ErrorCode.MAX_MESSAGE_LENGTH_EXCEEDED);
+        }
+        return body;
+    }
+
+    /** GOVERNANCE or COMPLIANCE, or null for anything else. */
+    @Nullable
+    private static ObjectLockRetentionMode parseRetentionMode(
+            @Nullable String mode) {
+        if (mode == null) {
+            return null;
+        }
+        var parsed = ObjectLockRetentionMode.fromValue(mode);
+        return parsed == ObjectLockRetentionMode.UNKNOWN_TO_SDK_VERSION ?
+                null : parsed;
+    }
+
+    /** ON or OFF, or null for anything else. */
+    @Nullable
+    private static ObjectLockLegalHoldStatus parseLegalHoldStatus(
+            @Nullable String status) {
+        if (status == null) {
+            return null;
+        }
+        var parsed = ObjectLockLegalHoldStatus.fromValue(status);
+        return parsed == ObjectLockLegalHoldStatus.UNKNOWN_TO_SDK_VERSION ?
+                null : parsed;
+    }
+
+    /** An ISO 8601 retain-until date, which S3 requires be in the future. */
+    private static Instant parseRetainUntilDate(String value) {
+        Instant until;
+        try {
+            until = Instant.parse(value);
+        } catch (DateTimeParseException dtpe) {
+            throw new S3ProxyException(S3ErrorCode.INVALID_ARGUMENT,
+                    "The retain until date must be provided in ISO 8601" +
+                    " format", dtpe);
+        }
+        if (!until.isAfter(Instant.now())) {
+            throw new S3ProxyException(S3ErrorCode.INVALID_ARGUMENT,
+                    "The retain until date must be in the future!");
+        }
+        return until;
+    }
+
+    @Nullable
+    private static Boolean parseBypassGovernanceRetention(
+            HttpServletRequest request) {
+        String value = request.getHeader(
+                AwsHttpHeaders.BYPASS_GOVERNANCE_RETENTION);
+        return value == null ? null : Boolean.parseBoolean(value);
+    }
+
+    /**
+     * The x-amz-object-lock-* headers a write carries, vetted against one
+     * another: mode and retain-until date come together or not at all, as
+     * S3 requires.  Whether the bucket has object lock is the store's to
+     * judge.
+     */
+    private record ObjectLockHeaders(
+            @Nullable ObjectLockMode mode,
+            @Nullable Instant retainUntilDate,
+            @Nullable ObjectLockLegalHoldStatus legalHold) {
+
+        static ObjectLockHeaders parse(HttpServletRequest request) {
+            return parse(request::getHeader);
+        }
+
+        /**
+         * Parses the same names from wherever a write carries them: the
+         * headers of a PUT, or the fields of a browser POST, which are
+         * spelled alike.
+         */
+        static ObjectLockHeaders parse(
+                Function<String, @Nullable String> lookup) {
+            String mode = lookup.apply(AwsHttpHeaders.OBJECT_LOCK_MODE);
+            String until = lookup.apply(
+                    AwsHttpHeaders.OBJECT_LOCK_RETAIN_UNTIL_DATE);
+            String legalHold = lookup.apply(
+                    AwsHttpHeaders.OBJECT_LOCK_LEGAL_HOLD);
+            if ((mode == null) != (until == null)) {
+                throw new S3ProxyException(S3ErrorCode.INVALID_ARGUMENT,
+                        "x-amz-object-lock-retain-until-date and" +
+                        " x-amz-object-lock-mode must both be supplied");
+            }
+            ObjectLockMode parsedMode = null;
+            Instant parsedUntil = null;
+            if (mode != null) {
+                parsedMode = ObjectLockMode.fromValue(mode);
+                if (parsedMode == ObjectLockMode.UNKNOWN_TO_SDK_VERSION) {
+                    throw new S3ProxyException(S3ErrorCode.INVALID_ARGUMENT,
+                            "Unknown wormMode directive.");
+                }
+                parsedUntil = parseRetainUntilDate(until);
+            }
+            ObjectLockLegalHoldStatus parsedHold = null;
+            if (legalHold != null) {
+                parsedHold = parseLegalHoldStatus(legalHold);
+                if (parsedHold == null) {
+                    throw new S3ProxyException(S3ErrorCode.INVALID_ARGUMENT,
+                            "Legal Hold must be either of 'ON' or 'OFF'");
+                }
+            }
+            return new ObjectLockHeaders(parsedMode, parsedUntil,
+                    parsedHold);
+        }
+
+        /**
+         * Whether these ask for any protection: retention, or a hold ON.
+         * Legal hold OFF asks for none, as checkObjectLock reasons.
+         */
+        boolean protects() {
+            return mode != null || legalHold == ObjectLockLegalHoldStatus.ON;
+        }
+    }
+
+    /**
+     * Refuse object lock, its subresources and its headers alike, on a store
+     * that does not implement it, as before any of them were understood.
+     * Accepting a lock header and writing an unlocked object would promise
+     * a retention nobody enforces.  Legal hold OFF and the bypass header ask
+     * for no protection, as S3 lets them on a bucket without object lock,
+     * and are let through.
+     *
+     * <p>On any store, a subresource sent to the level it does not describe
+     * -- object-lock on an object, retention or legal-hold on a bucket -- is
+     * refused too.  Dispatch routes each only where it belongs, so anywhere
+     * else it would fall through to the plain operation and be ignored: a
+     * PUT storing its body as the object, a DELETE removing the object or
+     * the bucket.
+     */
+    private static void checkObjectLock(HttpServletRequest request,
+            BlobStore blobStore, String[] path) {
+        boolean bucketLevel = path.length <= 2 || path[2].isEmpty();
+        if (bucketLevel ? request.getParameter("retention") != null ||
+                request.getParameter("legal-hold") != null :
+                request.getParameter("object-lock") != null) {
+            throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
+        }
+        // Nor does dispatch look for a subresource once an upload id or a
+        // copy source has picked the operation, so retention or legal-hold
+        // beside either would part-upload, copy over the key or abort the
+        // upload instead of answering what it names.
+        if ((request.getParameter("retention") != null ||
+                request.getParameter("legal-hold") != null) &&
+                (request.getParameter("uploadId") != null ||
+                request.getHeader(AwsHttpHeaders.COPY_SOURCE) != null)) {
+            throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
+        }
+        if (blobStore.supportsObjectLock()) {
+            return;
+        }
+        for (String parameter : OBJECT_LOCK_PARAMETERS) {
+            if (request.getParameter(parameter) != null) {
+                throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED,
+                        "Object lock is not supported.");
+            }
+        }
+        if (request.getHeader(AwsHttpHeaders.OBJECT_LOCK_MODE) != null ||
+                request.getHeader(
+                        AwsHttpHeaders.OBJECT_LOCK_RETAIN_UNTIL_DATE) != null ||
+                "ON".equalsIgnoreCase(request.getHeader(
+                        AwsHttpHeaders.OBJECT_LOCK_LEGAL_HOLD))) {
+            throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED,
+                    "Object lock is not supported.");
+        }
+    }
+
+    /**
      * GetBucketEncryption.  The store answers: a configuration when one
      * has been put, and S3's ServerSideEncryptionConfigurationNotFoundError
      * when none has -- which is also what a backend bucket configured out
@@ -2731,12 +3232,12 @@ public class S3ProxyHandler {
         // Some clients send this header on every bucket they create, rclone
         // among them, so refusing it outright leaves them unable to create a
         // bucket at all.  Only a bucket that asks for object lock has to be
-        // refused: it needs versioning, which S3Proxy does not implement, and
-        // creating an ordinary bucket instead would quietly give the caller
-        // less than it asked for.
-        String objectLock = request.getHeader(
-                AwsHttpHeaders.BUCKET_OBJECT_LOCK_ENABLED);
-        if (Boolean.parseBoolean(objectLock)) {
+        // refused, and only by a store without it: creating an ordinary
+        // bucket instead would quietly give the caller less than it asked
+        // for.
+        boolean objectLock = Boolean.parseBoolean(request.getHeader(
+                AwsHttpHeaders.BUCKET_OBJECT_LOCK_ENABLED));
+        if (objectLock && !blobStore.supportsObjectLock()) {
             throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
         }
 
@@ -2781,6 +3282,9 @@ public class S3ProxyHandler {
         String acl = request.getHeader(AwsHttpHeaders.ACL);
         var createRequest = CreateBucketRequest.builder()
                 .bucket(containerName);
+        if (objectLock) {
+            createRequest.objectLockEnabledForBucket(true);
+        }
         if ("public-read".equalsIgnoreCase(acl)) {
             createRequest.acl(BucketCannedACL.PUBLIC_READ);
         } else if ("public-read-write".equalsIgnoreCase(acl)) {
@@ -3057,6 +3561,7 @@ public class S3ProxyHandler {
         boolean hasCondition = ifMatch != null || ifMatchSize != null ||
                 ifMatchTime != null;
         String blobStoreType = getBlobStoreType(blobStore);
+        Boolean bypass = parseBypassGovernanceRetention(request);
         if (hasCondition) {
             checkConditionalDeleteSupport(blobStoreType, ifMatch, ifMatchSize,
                     ifMatchTime);
@@ -3071,6 +3576,7 @@ public class S3ProxyHandler {
                             .bucket(containerName)
                             .key(blobName)
                             .versionId(request.getParameter("versionId"))
+                            .bypassGovernanceRetention(bypass)
                             .ifMatch(ifMatch)
                             .ifMatchSize(ifMatchSize)
                             .ifMatchLastModifiedTime(ifMatchTime)
@@ -3095,6 +3601,7 @@ public class S3ProxyHandler {
                             .bucket(containerName)
                             .key(blobName)
                             .versionId(request.getParameter("versionId"))
+                            .bypassGovernanceRetention(bypass)
                             .build());
             addDeleteResultHeaders(response, result);
         }
@@ -3172,6 +3679,7 @@ public class S3ProxyHandler {
         }
 
         boolean supportsVersioning = blobStore.supportsVersioning();
+        Boolean bypass = parseBypassGovernanceRetention(request);
         String blobStoreType = getBlobStoreType(blobStore);
         boolean anyCondition = false;
         var objects = new ImmutableList.Builder<ObjectIdentifier>();
@@ -3237,6 +3745,7 @@ public class S3ProxyHandler {
                                         .bucket(containerName)
                                         .key(key)
                                         .versionId(versionId)
+                                        .bypassGovernanceRetention(bypass)
                                         .ifMatch(s3Object.eTag())
                                         .ifMatchSize(s3Object.parsedSize())
                                         .ifMatchLastModifiedTime(s3Object
@@ -3248,6 +3757,7 @@ public class S3ProxyHandler {
                                         .bucket(containerName)
                                         .key(key)
                                         .versionId(versionId)
+                                        .bypassGovernanceRetention(bypass)
                                         .build());
                     }
                     var builder = DeletedObject.builder()
@@ -3291,6 +3801,7 @@ public class S3ProxyHandler {
             deleteResponse = blobStore.removeBlobs(
                     DeleteObjectsRequest.builder()
                             .bucket(containerName)
+                            .bypassGovernanceRetention(bypass)
                             .delete(Delete.builder()
                                     .objects(objects.build())
                                     .build())
@@ -4175,6 +4686,13 @@ public class S3ProxyHandler {
                 .copySourceSSECustomerKeyMD5(request.getHeader(AwsHttpHeaders
                         .COPY_SOURCE_SERVER_SIDE_ENCRYPTION_CUSTOMER_KEY_MD5));
 
+        // The destination's lock, as on S3: a copy carries none of the
+        // source's retention unless it asks.
+        var lock = ObjectLockHeaders.parse(request);
+        copyRequest.objectLockMode(lock.mode())
+                .objectLockRetainUntilDate(lock.retainUntilDate())
+                .objectLockLegalHoldStatus(lock.legalHold());
+
         if (replaceMetadata) {
             copyRequest.metadataDirective(MetadataDirective.REPLACE);
             var userMetadata = ImmutableMap.<String, String>builder();
@@ -4454,6 +4972,11 @@ public class S3ProxyHandler {
                         AwsHttpHeaders.SERVER_SIDE_ENCRYPTION_CUSTOMER_KEY))
                 .sseCustomerKeyMD5(request.getHeader(AwsHttpHeaders
                         .SERVER_SIDE_ENCRYPTION_CUSTOMER_KEY_MD5));
+
+        var lock = ObjectLockHeaders.parse(request);
+        putRequest.objectLockMode(lock.mode())
+                .objectLockRetainUntilDate(lock.retainUntilDate())
+                .objectLockLegalHoldStatus(lock.legalHold());
 
         var contentHeaders = parseContentMetadata(request, checksum,
                 checksumValue);
@@ -4738,6 +5261,13 @@ public class S3ProxyHandler {
         // policy is answered as S3 answers it: the upload proceeds only when
         // the bucket grants AllUsers WRITE, and is refused otherwise.
         if (policy == null && signature == null && identity == null) {
+            // Object lock answers to permissions no ACL grant carries, so an
+            // unsigned form may not ask for it, as an unsigned PUT may not.
+            for (String header : OBJECT_LOCK_HEADERS) {
+                if (fields.containsKey(header)) {
+                    throw new S3ProxyException(S3ErrorCode.ACCESS_DENIED);
+                }
+            }
             checkPublicWriteAccess(anonymousBlobStore, containerName);
             finishPostBlob(request, response, anonymousBlobStore,
                     containerName, blobName, contentType, fields, payload,
@@ -4947,6 +5477,17 @@ public class S3ProxyHandler {
                     .sseCustomerKey(customerKey)
                     .sseCustomerKeyMD5(customerKeyMD5);
         }
+        // The lock fields ride the same way: a store without object lock
+        // refuses them rather than store an object unprotected that asked
+        // to be locked, as checkObjectLock refuses the headers.
+        var lock = ObjectLockHeaders.parse(fields::get);
+        if (lock.protects() && !blobStore.supportsObjectLock()) {
+            throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED,
+                    "Object lock is not supported.");
+        }
+        putRequest.objectLockMode(lock.mode())
+                .objectLockRetainUntilDate(lock.retainUntilDate())
+                .objectLockLegalHoldStatus(lock.legalHold());
         var userMetadata = new TreeMap<String, String>();
         for (var entry : fields.entrySet()) {
             if (entry.getKey().startsWith(USER_METADATA_PREFIX)) {
@@ -5088,6 +5629,10 @@ public class S3ProxyHandler {
                         AwsHttpHeaders.SERVER_SIDE_ENCRYPTION_CUSTOMER_KEY))
                 .sseCustomerKeyMD5(request.getHeader(AwsHttpHeaders
                         .SERVER_SIDE_ENCRYPTION_CUSTOMER_KEY_MD5));
+        var lock = ObjectLockHeaders.parse(request);
+        createRequest.objectLockMode(lock.mode())
+                .objectLockRetainUntilDate(lock.retainUntilDate())
+                .objectLockLegalHoldStatus(lock.legalHold());
 
         StorageClass parsedStorageClass = null;
         String storageClass = request.getHeader(AwsHttpHeaders.STORAGE_CLASS);
@@ -6401,6 +6946,19 @@ public class S3ProxyHandler {
         String storageClass = metadata.storageClassAsString();
         if (storageClass != null) {
             response.addHeader(AwsHttpHeaders.STORAGE_CLASS, storageClass);
+        }
+        if (metadata.objectLockMode() != null) {
+            response.addHeader(AwsHttpHeaders.OBJECT_LOCK_MODE,
+                    metadata.objectLockModeAsString());
+        }
+        if (metadata.objectLockRetainUntilDate() != null) {
+            response.addHeader(AwsHttpHeaders.OBJECT_LOCK_RETAIN_UNTIL_DATE,
+                    ISO8601_MILLIS_FORMAT.format(
+                            metadata.objectLockRetainUntilDate()));
+        }
+        if (metadata.objectLockLegalHoldStatus() != null) {
+            response.addHeader(AwsHttpHeaders.OBJECT_LOCK_LEGAL_HOLD,
+                    metadata.objectLockLegalHoldStatusAsString());
         }
         addServerSideEncryptionHeaders(response,
                 metadata.serverSideEncryptionAsString(),

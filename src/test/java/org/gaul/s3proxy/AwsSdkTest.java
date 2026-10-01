@@ -2139,7 +2139,9 @@ public final class AwsSdkTest {
 
     @Test
     public void testContainerCreateObjectLockEnabled() throws Exception {
-        // Object lock needs versioning, which S3Proxy does not implement.
+        // Refused only by a store without object lock; ObjectLockTest
+        // covers the stores that have it.
+        assumeTrue(!blobStore.supportsObjectLock());
         // S3Proxy answers this itself, before the backend sees the request.
         String containerName2 = createRandomContainerName();
         try {
@@ -3783,6 +3785,7 @@ public final class AwsSdkTest {
 
     @Test
     public void testObjectLockDoesNotOverwriteObject() throws Exception {
+        assumeTrue(!blobStore.supportsObjectLock());
         // PUT on an object dispatches to PutObject without inspecting the
         // subresource, so ?legal-hold and ?retention would otherwise store
         // their request body as the object.
@@ -3822,6 +3825,7 @@ public final class AwsSdkTest {
 
     @Test
     public void testBucketObjectLockNotImplemented() throws Exception {
+        assumeTrue(!blobStore.supportsObjectLock());
         // PUT on a bucket dispatches to CreateBucket, and GET to a listing
         // that a client parses as an empty ObjectLockConfiguration -- which
         // reads as "locking is configured" when nothing of the sort is.

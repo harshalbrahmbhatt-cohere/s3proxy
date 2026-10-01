@@ -171,7 +171,6 @@ S3Proxy has broad compatibility with the S3 API, however, it does not support:
 * bucket replication
 * [CORS bucket operations](https://docs.aws.amazon.com/AmazonS3/latest/dev/cors.html#how-do-i-enable-cors) like getting or setting the CORS configuration for a bucket. S3Proxy only supports a static configuration (see below).
 * hosting static websites
-* object lock, including legal hold and retention
 * object ownership controls
 * object tagging
 * paginating ListParts with `part-number-marker`
@@ -204,6 +203,7 @@ Some limitations depend on the storage backend:
 | no object versioning, see [#1137](https://github.com/gaul/s3proxy/issues/1137) | `azureblob` |
 | no object versioning, see [#1138](https://github.com/gaul/s3proxy/issues/1138) | `filesystem` |
 | no object versioning, for want of a service analog | `openstack-swift`, `sftp` |
+| no object lock (retention, legal hold, `?object-lock`) | every backend but `aws-s3` |
 | no server-side encryption, see [#1134](https://github.com/gaul/s3proxy/issues/1134) | `google-cloud-storage` |
 | no server-side encryption, by design or for want of a service analog | `filesystem`, `openstack-swift`, `sftp` |
 | SSE-S3 only: AES256 relayed from Azure's own at-rest encryption; SSE-C ([#1135](https://github.com/gaul/s3proxy/issues/1135)) and SSE-KMS refused | `azureblob` |

@@ -75,6 +75,8 @@ public enum S3ErrorCode {
             "The content of the form does not meet the conditions specified" +
             " in the policy document."),
     INVALID_REQUEST(HttpServletResponse.SC_BAD_REQUEST, "Bad Request"),
+    INVALID_RETENTION_PERIOD(HttpServletResponse.SC_BAD_REQUEST,
+            "Default retention period must be a positive integer value."),
     INVALID_STORAGE_CLASS(HttpServletResponse.SC_BAD_REQUEST,
             "The storage class you specified is not valid."),
     INVALID_U_R_I(HttpServletResponse.SC_BAD_REQUEST,
