@@ -55,6 +55,8 @@ import software.amazon.awssdk.services.s3.model.Transition;
  * it the way S3 does on the way.  What is refused here is what S3 refuses of
  * any bucket, whatever backs it: the stores see only a configuration S3
  * would have taken, and judge for themselves whether they can carry it out.
+ * The one exception is a repeated element split by another, which is
+ * refused because the binder cannot keep it whole, whatever S3 makes of it.
  */
 final class LifecycleConfigurations {
     /** S3's ceiling on the rules one configuration holds. */
