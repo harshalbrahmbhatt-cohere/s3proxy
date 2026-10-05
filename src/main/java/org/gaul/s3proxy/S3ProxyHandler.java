@@ -138,6 +138,7 @@ import software.amazon.awssdk.services.s3.model.DeleteObjectResponse;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsRequest;
 import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse;
 import software.amazon.awssdk.services.s3.model.DeletedObject;
+import software.amazon.awssdk.services.s3.model.EventHoldDuration;
 import software.amazon.awssdk.services.s3.model.GetBucketAclRequest;
 import software.amazon.awssdk.services.s3.model.GetBucketAclResponse;
 import software.amazon.awssdk.services.s3.model.GetBucketEncryptionRequest;
@@ -2427,6 +2428,10 @@ public class S3ProxyHandler {
                         writeSimpleElement(xml, "Years",
                                 retention.years().toString());
                     }
+                    if (retention.defaultEventHold() != null) {
+                        writeEventHoldDuration(xml, "DefaultEventHold",
+                                retention.defaultEventHold());
+                    }
                     xml.writeEndElement();
                     xml.writeEndElement();
                 }
@@ -2530,12 +2535,37 @@ public class S3ProxyHandler {
                             ISO8601_MILLIS_FORMAT.format(
                                     retention.retainUntilDate()));
                 }
+                if (retention.eventHold() != null) {
+                    writeSimpleElement(xml, "EventHold",
+                            retention.eventHoldAsString());
+                }
+                if (retention.eventHoldDuration() != null) {
+                    writeEventHoldDuration(xml, "EventHoldDuration",
+                            retention.eventHoldDuration());
+                }
             }
             xml.writeEndElement();
             xml.flush();
         } catch (XMLStreamException xse) {
             throw new IOException(xse);
         }
+    }
+
+    /**
+     * An event hold's duration, which a read reports as the service holds
+     * it even though a write may not set one through the proxy.
+     */
+    private static void writeEventHoldDuration(XMLStreamWriter xml,
+            String elementName, EventHoldDuration duration)
+            throws XMLStreamException {
+        xml.writeStartElement(elementName);
+        if (duration.days() != null) {
+            writeSimpleElement(xml, "Days", duration.days().toString());
+        }
+        if (duration.years() != null) {
+            writeSimpleElement(xml, "Years", duration.years().toString());
+        }
+        xml.writeEndElement();
     }
 
     private void handleSetObjectRetention(HttpServletRequest request,
@@ -7038,6 +7068,23 @@ public class S3ProxyHandler {
         if (metadata.objectLockLegalHoldStatus() != null) {
             response.addHeader(AwsHttpHeaders.OBJECT_LOCK_LEGAL_HOLD,
                     metadata.objectLockLegalHoldStatusAsString());
+        }
+
+        // An event hold set on the service, which a write through the proxy
+        // cannot ask for, is still reported as the service holds it.
+        if (metadata.objectLockEventHold() != null) {
+            response.addHeader(AwsHttpHeaders.OBJECT_LOCK_EVENT_HOLD,
+                    metadata.objectLockEventHoldAsString());
+        }
+        if (metadata.objectLockEventHoldDurationDays() != null) {
+            response.addHeader(
+                    AwsHttpHeaders.OBJECT_LOCK_EVENT_HOLD_DURATION_DAYS,
+                    metadata.objectLockEventHoldDurationDays().toString());
+        }
+        if (metadata.objectLockEventHoldDurationYears() != null) {
+            response.addHeader(
+                    AwsHttpHeaders.OBJECT_LOCK_EVENT_HOLD_DURATION_YEARS,
+                    metadata.objectLockEventHoldDurationYears().toString());
         }
     }
 

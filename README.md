@@ -171,7 +171,7 @@ S3Proxy has broad compatibility with the S3 API, however, it does not support:
 * bucket replication
 * [CORS bucket operations](https://docs.aws.amazon.com/AmazonS3/latest/dev/cors.html#how-do-i-enable-cors) like getting or setting the CORS configuration for a bucket. S3Proxy only supports a static configuration (see below).
 * hosting static websites
-* object lock event holds (variable retention), which are refused rather than ignored
+* setting object lock event holds (variable retention), which is refused rather than ignored; holds set on the service directly are still reported
 * object ownership controls
 * object tagging
 * paginating ListParts with `part-number-marker`

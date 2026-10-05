@@ -131,6 +131,11 @@ public final class SdkResponses {
                 .expires(response.expires())
                 .lastModified(response.lastModified())
                 .metadata(response.metadata())
+                .objectLockEventHold(response.objectLockEventHoldAsString())
+                .objectLockEventHoldDurationDays(
+                        response.objectLockEventHoldDurationDays())
+                .objectLockEventHoldDurationYears(
+                        response.objectLockEventHoldDurationYears())
                 .objectLockLegalHoldStatus(
                         response.objectLockLegalHoldStatusAsString())
                 .objectLockMode(response.objectLockModeAsString())
