@@ -2135,13 +2135,7 @@ public class S3ProxyHandler {
                     "Versioning is not supported.");
         }
 
-        // Bound the buffered body: the configuration is a few elements, but
-        // the request is otherwise attacker-controlled.
-        byte[] body = ByteStreams.limit(is, v4MaxNonChunkedRequestSize + 1)
-                .readAllBytes();
-        if (body.length == v4MaxNonChunkedRequestSize + 1) {
-            throw new S3ProxyException(S3ErrorCode.MAX_MESSAGE_LENGTH_EXCEEDED);
-        }
+        byte[] body = readBoundedBody(is);
         VersioningConfigurationRequest vcr = readXmlBody(body,
                 VersioningConfigurationRequest.class);
         // Disabled is what S3 answers for a bucket that has never asked for
@@ -2244,13 +2238,7 @@ public class S3ProxyHandler {
             throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED,
                     "Bucket default encryption is not supported.");
         }
-        // Bound the buffered body: the configuration is a few elements, but
-        // the request is otherwise attacker-controlled.
-        byte[] body = ByteStreams.limit(is, v4MaxNonChunkedRequestSize + 1)
-                .readAllBytes();
-        if (body.length == v4MaxNonChunkedRequestSize + 1) {
-            throw new S3ProxyException(S3ErrorCode.MAX_MESSAGE_LENGTH_EXCEEDED);
-        }
+        byte[] body = readBoundedBody(is);
         var configuration = readXmlBody(body,
                 ServerSideEncryptionConfigurationRequest.class);
         // S3's schema requires the rule, nothing in S3 produces more than
@@ -3114,11 +3102,27 @@ public class S3ProxyHandler {
     }
 
     /**
-     * Validate the request body against Content-MD5 (legacy) or any
-     * x-amz-checksum-* header (modern AWS SDKs).  Throws if no checksum is
+     * Reads a request body buffered whole, bounded: the documents are a few
+     * elements, but the request is otherwise attacker-controlled, so read
+     * at most one byte past the limit and reject rather than exhaust the
+     * heap.
+     */
+    private byte[] readBoundedBody(InputStream is) throws IOException {
+        byte[] body = ByteStreams.limit(is, v4MaxNonChunkedRequestSize + 1)
+                .readAllBytes();
+        if (body.length == v4MaxNonChunkedRequestSize + 1) {
+            throw new S3ProxyException(S3ErrorCode.MAX_MESSAGE_LENGTH_EXCEEDED);
+        }
+        return body;
+    }
+
+    /**
+     * Validate a buffered request body against Content-MD5 (legacy) or any
+     * x-amz-checksum-* header (modern AWS SDKs), for the operations S3
+     * requires prove their body intact.  Throws if no checksum is
      * present or if validation fails.
      */
-    private static void validateMultiBlobRemoveChecksum(
+    private static void validateBodyChecksum(
             HttpServletRequest request, byte[] body) {
         String contentMD5 = request.getHeader(HttpHeaders.CONTENT_MD5);
         if (contentMD5 != null) {
@@ -3152,15 +3156,10 @@ public class S3ProxyHandler {
             HttpServletResponse response, InputStream is,
             BlobStore blobStore, String containerName)
             throws IOException {
-        // Bound the buffered body: a MultiObjectDelete is limited to 1000
-        // keys, but the request is otherwise attacker-controlled, so read at
-        // most one byte past the limit and reject rather than exhaust the heap.
-        byte[] body = ByteStreams.limit(is, v4MaxNonChunkedRequestSize + 1)
-                .readAllBytes();
-        if (body.length == v4MaxNonChunkedRequestSize + 1) {
-            throw new S3ProxyException(S3ErrorCode.MAX_MESSAGE_LENGTH_EXCEEDED);
-        }
-        validateMultiBlobRemoveChecksum(request, body);
+        // A MultiObjectDelete is limited to 1000 keys, but the request is
+        // otherwise attacker-controlled.
+        byte[] body = readBoundedBody(is);
+        validateBodyChecksum(request, body);
         DeleteMultipleObjectsRequest dmor = readXmlBody(
                 body, DeleteMultipleObjectsRequest.class);
         if (dmor.objects() == null) {
@@ -6968,12 +6967,7 @@ public class S3ProxyHandler {
                 !transferEncoding.toLowerCase().contains("chunked")) {
             throw new S3ProxyException(S3ErrorCode.MISSING_CONTENT_LENGTH);
         }
-        byte[] body = ByteStreams.limit(is, v4MaxNonChunkedRequestSize + 1)
-                .readAllBytes();
-        if (body.length == v4MaxNonChunkedRequestSize + 1) {
-            throw new S3ProxyException(S3ErrorCode.MAX_MESSAGE_LENGTH_EXCEEDED);
-        }
-        return body;
+        return readBoundedBody(is);
     }
 
     /**
