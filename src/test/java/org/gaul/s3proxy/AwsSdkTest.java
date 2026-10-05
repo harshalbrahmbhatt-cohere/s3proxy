@@ -3771,6 +3771,14 @@ public final class AwsSdkTest {
                         .isEqualTo("NotImplemented");
             }
             try {
+                client.getBucketLifecycleConfiguration(
+                        b -> b.bucket(containerName));
+                Fail.failBecauseExceptionWasNotThrown(S3Exception.class);
+            } catch (S3Exception e) {
+                assertThat(e.awsErrorDetails().errorCode())
+                        .isEqualTo("NotImplemented");
+            }
+            try {
                 client.deleteBucketLifecycle(b -> b.bucket(containerName));
                 Fail.failBecauseExceptionWasNotThrown(S3Exception.class);
             } catch (S3Exception e) {

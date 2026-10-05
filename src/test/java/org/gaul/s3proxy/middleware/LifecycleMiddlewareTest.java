@@ -51,14 +51,21 @@ import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationR
  * the caller never named, while their other buckets pass through.
  */
 public final class LifecycleMiddlewareTest {
-    private static final PutBucketLifecycleConfigurationRequest.Builder PUT =
-            PutBucketLifecycleConfigurationRequest.builder()
-                    .lifecycleConfiguration(c -> c.rules(LifecycleRule.builder()
-                            .id("r")
-                            .status(ExpirationStatus.ENABLED)
-                            .filter(f -> f.prefix("logs/"))
-                            .expiration(e -> e.days(1))
-                            .build()));
+    /**
+     * A put of one rule for the given bucket.  A fresh builder each time:
+     * the SDK's builders are mutable, and these tests run concurrently.
+     */
+    private static PutBucketLifecycleConfigurationRequest put(String bucket) {
+        return PutBucketLifecycleConfigurationRequest.builder()
+                .bucket(bucket)
+                .lifecycleConfiguration(c -> c.rules(LifecycleRule.builder()
+                        .id("r")
+                        .status(ExpirationStatus.ENABLED)
+                        .filter(f -> f.prefix("logs/"))
+                        .expiration(e -> e.days(1))
+                        .build()))
+                .build();
+    }
 
     @Test
     public void testAliasSendsTheRealBucketName() {
@@ -67,7 +74,7 @@ public final class LifecycleMiddlewareTest {
                 ImmutableBiMap.of("alias", "backend"));
 
         var unused1 = store.putBucketLifecycleConfiguration(
-                PUT.bucket("alias").build());
+                put("alias"));
         var unused2 = store.getBucketLifecycleConfiguration(
                 GetBucketLifecycleConfigurationRequest.builder()
                         .bucket("alias").build());
@@ -89,7 +96,7 @@ public final class LifecycleMiddlewareTest {
         assertThat(recorder.buckets).isEmpty();
 
         var unused = store.putBucketLifecycleConfiguration(
-                PUT.bucket("plain").build());
+                put("plain"));
         assertThat(recorder.buckets).containsExactly("plain");
     }
 
@@ -105,7 +112,7 @@ public final class LifecycleMiddlewareTest {
         assertThat(recorder.buckets).isEmpty();
 
         var unused = store.putBucketLifecycleConfiguration(
-                PUT.bucket("plain").build());
+                put("plain"));
         assertThat(recorder.buckets).containsExactly("plain");
     }
 
@@ -115,7 +122,7 @@ public final class LifecycleMiddlewareTest {
         BlobStore store = ReadOnlyBlobStore.newReadOnlyBlobStore(recorder);
 
         assertThatThrownBy(() -> store.putBucketLifecycleConfiguration(
-                PUT.bucket("b").build()))
+                put("b")))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> store.deleteBucketLifecycle(
                 DeleteBucketLifecycleRequest.builder().bucket("b").build()))
@@ -184,7 +191,7 @@ public final class LifecycleMiddlewareTest {
                         .bucket(bucket).build()))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> store.putBucketLifecycleConfiguration(
-                PUT.bucket(bucket).build()))
+                put(bucket)))
                 .isInstanceOf(UnsupportedOperationException.class);
         assertThatThrownBy(() -> store.deleteBucketLifecycle(
                 DeleteBucketLifecycleRequest.builder()

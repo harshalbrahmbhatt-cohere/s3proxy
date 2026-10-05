@@ -16,16 +16,26 @@
 
 package org.gaul.s3proxy;
 
+import java.io.ByteArrayInputStream;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+
+import javax.xml.stream.XMLInputFactory;
+import javax.xml.stream.XMLStreamConstants;
+import javax.xml.stream.XMLStreamException;
+import javax.xml.stream.XMLStreamReader;
 
 import org.jspecify.annotations.Nullable;
 
@@ -51,7 +61,137 @@ final class LifecycleConfigurations {
     /** S3's ceiling on a rule ID's length. */
     static final int MAX_ID_LENGTH = 255;
 
+    /** A child element that may repeat rather than appear at most once. */
+    private static final int MANY = Integer.MAX_VALUE;
+
+    /**
+     * The elements each container holds, and how often each may appear.  An
+     * element named here as a child but not as a container holds text only.
+     * Binding alone would not do: Jackson drops an element it does not know
+     * and keeps the last of a repeated one, so a Filter with two Prefixes,
+     * or one whose condition is misspelled, would bind to a broader rule
+     * than the client sent -- one S3 refuses as MalformedXML, and one whose
+     * expiration would delete what the client meant to keep.
+     */
+    private static final Map<String, Map<String, Integer>> SCHEMA = Map.of(
+            "LifecycleConfiguration", Map.of("Rule", MANY),
+            "Rule", Map.of(
+                    "ID", 1,
+                    "Prefix", 1,
+                    "Filter", 1,
+                    "Status", 1,
+                    "Expiration", 1,
+                    "Transition", MANY,
+                    "NoncurrentVersionExpiration", 1,
+                    "NoncurrentVersionTransition", MANY,
+                    "AbortIncompleteMultipartUpload", 1),
+            "Filter", Map.of(
+                    "Prefix", 1,
+                    "Tag", 1,
+                    "ObjectSizeGreaterThan", 1,
+                    "ObjectSizeLessThan", 1,
+                    "And", 1),
+            "And", Map.of(
+                    "Prefix", 1,
+                    "Tag", MANY,
+                    "ObjectSizeGreaterThan", 1,
+                    "ObjectSizeLessThan", 1),
+            "Tag", Map.of("Key", 1, "Value", 1),
+            "Expiration", Map.of(
+                    "Date", 1, "Days", 1, "ExpiredObjectDeleteMarker", 1),
+            "Transition", Map.of("Date", 1, "Days", 1, "StorageClass", 1),
+            "NoncurrentVersionExpiration", Map.of(
+                    "NoncurrentDays", 1, "NewerNoncurrentVersions", 1),
+            "NoncurrentVersionTransition", Map.of(
+                    "NoncurrentDays", 1, "NewerNoncurrentVersions", 1,
+                    "StorageClass", 1),
+            "AbortIncompleteMultipartUpload", Map.of(
+                    "DaysAfterInitiation", 1));
+
+    private static final XMLInputFactory INPUT_FACTORY = newInputFactory();
+
     private LifecycleConfigurations() {
+    }
+
+    private static XMLInputFactory newInputFactory() {
+        XMLInputFactory factory = XMLInputFactory.newFactory();
+        factory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
+        factory.setProperty(
+                XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
+        return factory;
+    }
+
+    /**
+     * Refuses a body whose elements S3's schema does not allow where they
+     * stand: an unknown element, one that appears more often than it may,
+     * an element inside one that holds text, text inside one that holds
+     * elements, or an attribute on any element.  The root is matched without
+     * regard to case, as AWS's own examples spell it LifeCycleConfiguration.
+     */
+    static void checkStructure(byte[] body) {
+        try {
+            XMLStreamReader reader = INPUT_FACTORY.createXMLStreamReader(
+                    new ByteArrayInputStream(body));
+            try {
+                checkStructure(reader);
+            } finally {
+                reader.close();
+            }
+        } catch (XMLStreamException xse) {
+            throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L, xse);
+        }
+    }
+
+    private static void checkStructure(XMLStreamReader reader)
+            throws XMLStreamException {
+        // Each open element, with how often each child has appeared in it.
+        Deque<String> names = new ArrayDeque<>();
+        Deque<Map<String, Integer>> seen = new ArrayDeque<>();
+        while (reader.hasNext()) {
+            int event = reader.next();
+            if (event == XMLStreamConstants.START_ELEMENT) {
+                String name = reader.getLocalName();
+                if (names.isEmpty()) {
+                    if (!name.equalsIgnoreCase("LifecycleConfiguration")) {
+                        throw new S3ProxyException(
+                                S3ErrorCode.MALFORMED_X_M_L);
+                    }
+                    name = "LifecycleConfiguration";
+                } else {
+                    var allowed = SCHEMA.get(names.peek());
+                    Integer limit = allowed == null ? null : allowed.get(name);
+                    if (limit == null) {
+                        throw new S3ProxyException(
+                                S3ErrorCode.MALFORMED_X_M_L);
+                    }
+                    int count = seen.peek().merge(name, 1, Integer::sum);
+                    if (count > limit) {
+                        throw new S3ProxyException(
+                                S3ErrorCode.MALFORMED_X_M_L);
+                    }
+                }
+                // S3's schema gives no lifecycle element an attribute.  Most
+                // would only be ignored, but Jackson binds xsi:nil as a
+                // missing element -- a nil Prefix or And as an empty filter
+                // scoping the rule to the whole bucket.  Namespace
+                // declarations are not attributes here, so the root's
+                // xmlns survives this.
+                if (reader.getAttributeCount() != 0) {
+                    throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+                }
+                names.push(name);
+                seen.push(new HashMap<>());
+            } else if (event == XMLStreamConstants.END_ELEMENT) {
+                names.pop();
+                seen.pop();
+            } else if ((event == XMLStreamConstants.CHARACTERS ||
+                    event == XMLStreamConstants.CDATA) &&
+                    !names.isEmpty() && SCHEMA.containsKey(names.peek()) &&
+                    !reader.isWhiteSpace() &&
+                    !reader.getText().isBlank()) {
+                throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+            }
+        }
     }
 
     static List<LifecycleRule> toRules(
@@ -74,7 +214,7 @@ final class LifecycleConfigurations {
             // S3 names a rule sent without an ID itself; the store passing
             // it through does the same, and one that keeps its own rules
             // is left to choose.
-            if (rule.id() != null) {
+            if (rule.id() != null && !rule.id().isEmpty()) {
                 if (rule.id().length() > MAX_ID_LENGTH) {
                     throw new S3ProxyException(S3ErrorCode.INVALID_ARGUMENT,
                             "ID length should not exceed allowed limit of " +

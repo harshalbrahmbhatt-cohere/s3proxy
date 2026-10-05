@@ -141,7 +141,8 @@ public final class S3Exceptions {
 
     /**
      * The 404 a bucket answers ?lifecycle with before any rules have been
-     * put, or after they have been deleted.
+     * put, or after they have been deleted -- for a store that keeps the
+     * rules itself.  A pass-through store relays its service's own.
      */
     public static S3Exception noSuchLifecycleConfiguration(String container) {
         return (S3Exception) S3Exception.builder()

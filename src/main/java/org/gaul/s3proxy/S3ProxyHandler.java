@@ -700,6 +700,19 @@ public class S3ProxyHandler {
             path[i] = percentDecode(path[i]);
         }
 
+        // A bucket-only subresource on an object key is refused before
+        // either path dispatches, the anonymous one included: otherwise it
+        // would run as the plain object operation.
+        if (path.length > 2 && !path[2].isEmpty()) {
+            for (String parameter : BUCKET_ONLY_PARAMETERS) {
+                if (request.getParameter(parameter) != null) {
+                    logger.error("Unknown parameters {} with URI {}",
+                            parameter, request.getRequestURI());
+                    throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
+                }
+            }
+        }
+
         // when access information is not provided in request header,
         // treat it as anonymous, return all public accessible information
         // -- or store it, where a bucket grants AllUsers WRITE
@@ -863,14 +876,11 @@ public class S3ProxyHandler {
         }
 
         boolean writeMethod = method.equals("PUT") || method.equals("DELETE");
-        boolean objectRequest = path.length > 2 && !path[2].isEmpty();
         for (String parameter : Collections.list(
                 request.getParameterNames())) {
             if (UNSUPPORTED_PARAMETERS.contains(parameter) ||
                     (writeMethod &&
-                            UNSUPPORTED_WRITE_PARAMETERS.contains(parameter)) ||
-                    (objectRequest &&
-                            BUCKET_ONLY_PARAMETERS.contains(parameter))) {
+                            UNSUPPORTED_WRITE_PARAMETERS.contains(parameter))) {
                 logger.error("Unknown parameters {} with URI {}",
                         parameter, request.getRequestURI());
                 throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
@@ -2522,7 +2532,8 @@ public class S3ProxyHandler {
         for (Tag tag : tags) {
             xml.writeStartElement("Tag");
             writeSimpleElement(xml, "Key", tag.key());
-            writeSimpleElement(xml, "Value", tag.value());
+            writeSimpleElement(xml, "Value",
+                    Strings.nullToEmpty(tag.value()));
             xml.writeEndElement();
         }
         if (objectSizeGreaterThan != null) {
@@ -2558,6 +2569,7 @@ public class S3ProxyHandler {
             throw new S3ProxyException(S3ErrorCode.MAX_MESSAGE_LENGTH_EXCEEDED);
         }
         validateRequiredBodyChecksum(request, body);
+        LifecycleConfigurations.checkStructure(body);
         var configuration = readXmlBody(body,
                 LifecycleConfigurationRequest.class);
         var rules = LifecycleConfigurations.toRules(configuration);
@@ -5788,10 +5800,13 @@ public class S3ProxyHandler {
         // whitespace kept flowing during a slow completion, which matters
         // less than answering 412 where S3 answers 412.  A versioning store
         // completes synchronously for the same reason: the version it mints
-        // is a response header, unsendable once the prolog is out.
+        // is a response header, unsendable once the prolog is out, and so
+        // does a store that keeps lifecycle rules, whose x-amz-expiration is
+        // a header too.
         CompleteMultipartUploadResponse syncResult = null;
         if (completeIfMatch != null || completeIfNoneMatch != null ||
-                blobStore.supportsVersioning()) {
+                blobStore.supportsVersioning() ||
+                blobStore.supportsBucketLifecycle()) {
             syncResult = blobStore.completeMultipartUpload(completeMpu,
                     sdkComplete);
             if (Quirks.MULTIPART_REQUIRES_STUB.contains(blobStoreType)) {
@@ -5807,8 +5822,8 @@ public class S3ProxyHandler {
             response.addHeader(AwsHttpHeaders.VERSION_ID,
                     completedResult.versionId());
         }
-        // Like the version, the expiration is a header, and so only the
-        // synchronous completion can report it.
+        // Like the version, the expiration is a header, which is why a store
+        // that keeps lifecycle rules completes synchronously above.
         if (completedResult != null) {
             addExpirationHeader(response, completedResult.expiration());
         }

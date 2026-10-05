@@ -90,6 +90,9 @@ public final class BucketLifecycleTest {
     private static final String EXPIRATION =
             "expiry-date=\"Fri, 23 Dec 2012 00:00:00 GMT\", rule-id=\"logs\"";
 
+    private static final String XSI =
+            "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"";
+
     private BlobStore blobStore;
     private S3Proxy s3Proxy;
     private S3Client client;
@@ -185,6 +188,29 @@ public final class BucketLifecycleTest {
                         .status(ExpirationStatus.ENABLED)
                         .filter(f -> f.objectSizeLessThan(10L))
                         .expiration(e -> e.days(1))
+                        .build(),
+                LifecycleRule.builder()
+                        .id("dated")
+                        .status(ExpirationStatus.ENABLED)
+                        .filter(f -> f.objectSizeGreaterThan(5L))
+                        .transitions(Transition.builder()
+                                .date(date)
+                                .storageClass(TransitionStorageClass
+                                        .DEEP_ARCHIVE)
+                                .build())
+                        .noncurrentVersionTransitions(
+                                NoncurrentVersionTransition.builder()
+                                        .noncurrentDays(0)
+                                        .newerNoncurrentVersions(2)
+                                        .storageClass(TransitionStorageClass
+                                                .GLACIER)
+                                        .build())
+                        .build(),
+                LifecycleRule.builder()
+                        .id("keep-markers")
+                        .status(ExpirationStatus.ENABLED)
+                        .filter(f -> f.prefix("m/"))
+                        .expiration(e -> e.expiredObjectDeleteMarker(false))
                         .build());
 
         client.putBucketLifecycleConfiguration(b -> b
@@ -266,7 +292,11 @@ public final class BucketLifecycleTest {
         assertThat(blobStore.containerExists(containerName)).isTrue();
         assertThatThrownBy(() -> client.getBucketLifecycleConfiguration(
                 b -> b.bucket(containerName)))
-                .isInstanceOf(S3Exception.class);
+                .isInstanceOfSatisfying(S3Exception.class, e -> {
+                    assertThat(e.statusCode()).isEqualTo(404);
+                    assertThat(e.awsErrorDetails().errorCode())
+                            .isEqualTo("NoSuchLifecycleConfiguration");
+                });
     }
 
     @Test
@@ -365,6 +395,133 @@ public final class BucketLifecycleTest {
                 // an ID longer than S3 allows
                 Map.entry(configuration(rule("r".repeat(256),
                         "<Days>1</Days>")), "InvalidArgument"),
+                // an empty expiration, and a marker neither true nor false
+                Map.entry(configuration(rule("r", "")), "MalformedXML"),
+                Map.entry(configuration(rule("r",
+                        "<ExpiredObjectDeleteMarker>yes" +
+                        "</ExpiredObjectDeleteMarker>")), "MalformedXML"),
+                // a date that does not parse, and one off midnight on a
+                // transition
+                Map.entry(configuration(rule("r", "<Date>20300101</Date>")),
+                        "MalformedXML"),
+                Map.entry(configuration(action(
+                        "<Transition><Date>2030-01-01T01:00:00Z</Date>" +
+                        "<StorageClass>GLACIER</StorageClass></Transition>")),
+                        "InvalidArgument"),
+                // a transition with neither a date nor days, with both,
+                // without a storage class, or with negative days
+                Map.entry(configuration(action("<Transition><StorageClass>" +
+                        "GLACIER</StorageClass></Transition>")),
+                        "MalformedXML"),
+                Map.entry(configuration(action("<Transition><Days>1</Days>" +
+                        "<Date>2030-01-01T00:00:00Z</Date><StorageClass>" +
+                        "GLACIER</StorageClass></Transition>")),
+                        "MalformedXML"),
+                Map.entry(configuration(action(
+                        "<Transition><Days>1</Days></Transition>")),
+                        "MalformedXML"),
+                Map.entry(configuration(action("<Transition><Days>-1</Days>" +
+                        "<StorageClass>GLACIER</StorageClass></Transition>")),
+                        "InvalidArgument"),
+                // noncurrent counts S3 refuses
+                Map.entry(configuration(action(
+                        "<NoncurrentVersionExpiration><NoncurrentDays>0" +
+                        "</NoncurrentDays></NoncurrentVersionExpiration>")),
+                        "InvalidArgument"),
+                Map.entry(configuration(action(
+                        "<NoncurrentVersionExpiration><NoncurrentDays>1" +
+                        "</NoncurrentDays><NewerNoncurrentVersions>0" +
+                        "</NewerNoncurrentVersions>" +
+                        "</NoncurrentVersionExpiration>")),
+                        "InvalidArgument"),
+                Map.entry(configuration(action(
+                        "<NoncurrentVersionTransition><NoncurrentDays>-1" +
+                        "</NoncurrentDays><StorageClass>GLACIER" +
+                        "</StorageClass></NoncurrentVersionTransition>")),
+                        "InvalidArgument"),
+                Map.entry(configuration(action(
+                        "<NoncurrentVersionTransition><NoncurrentDays>1" +
+                        "</NoncurrentDays><NewerNoncurrentVersions>0" +
+                        "</NewerNoncurrentVersions><StorageClass>GLACIER" +
+                        "</StorageClass></NoncurrentVersionTransition>")),
+                        "InvalidArgument"),
+                Map.entry(configuration(action(
+                        "<AbortIncompleteMultipartUpload>" +
+                        "<DaysAfterInitiation>0</DaysAfterInitiation>" +
+                        "</AbortIncompleteMultipartUpload>")),
+                        "InvalidArgument"),
+                // a tag without a key, alone and under an And
+                Map.entry(configuration(filtered("<Tag><Value>v</Value>" +
+                        "</Tag>")), "MalformedXML"),
+                Map.entry(configuration(filtered("<And><Prefix>a</Prefix>" +
+                        "<Tag><Value>v</Value></Tag></And>")),
+                        "MalformedXML"),
+                // object sizes that are not nonnegative numbers
+                Map.entry(configuration(filtered(
+                        "<ObjectSizeGreaterThan>-1</ObjectSizeGreaterThan>")),
+                        "InvalidArgument"),
+                Map.entry(configuration(filtered(
+                        "<ObjectSizeLessThan>x</ObjectSizeLessThan>")),
+                        "MalformedXML"),
+                // Repeated and unknown elements, which binding alone would
+                // collapse into a broader rule than the one sent.
+                Map.entry(configuration(filtered(
+                        "<Prefix>keep/</Prefix><Prefix></Prefix>")),
+                        "MalformedXML"),
+                Map.entry(configuration(filtered("<Tag><Key>a</Key>" +
+                        "<Value>1</Value></Tag><Tag><Key>b</Key>" +
+                        "<Value>2</Value></Tag>")), "MalformedXML"),
+                Map.entry(configuration(filtered(
+                        "<And><Prefix>a/</Prefix><Prefix>b/</Prefix></And>")),
+                        "MalformedXML"),
+                Map.entry(configuration(filtered(
+                        "<Prefix>keep/</Prefix><Bogus>x</Bogus>")),
+                        "MalformedXML"),
+                Map.entry(configuration(filtered(
+                        "<Prefix><x>a</x></Prefix>")), "MalformedXML"),
+                Map.entry(configuration("<Rule><ID>r</ID><Filter>" +
+                        "<Prefix>keep/</Prefix></Filter><Filter></Filter>" +
+                        "<Status>Enabled</Status><Expiration><Days>1</Days>" +
+                        "</Expiration></Rule>"), "MalformedXML"),
+                Map.entry(configuration("<Rule><ID>r</ID><Filter/>" +
+                        "<Status>Disabled</Status><Status>Enabled</Status>" +
+                        "<Expiration><Days>1</Days></Expiration></Rule>"),
+                        "MalformedXML"),
+                Map.entry(configuration(rule("r",
+                        "<Days>3650</Days><Days>1</Days>")), "MalformedXML"),
+                Map.entry(configuration("<Rule><ID>r</ID><Filter/>" +
+                        "<Status>Enabled</Status><Expiration><Days>1</Days>" +
+                        "</Expiration><Expiration><Days>2</Days>" +
+                        "</Expiration></Rule>"), "MalformedXML"),
+                Map.entry(configuration("<Rule><ID>r</ID><filter/>" +
+                        "<Status>Enabled</Status><Expiration><Days>1</Days>" +
+                        "</Expiration></Rule>"), "MalformedXML"),
+                Map.entry(configuration(rule("r", "<Days>1</Days>") +
+                        "<Extra/>"), "MalformedXML"),
+                Map.entry(configuration("<Rule>text<ID>r</ID><Filter/>" +
+                        "<Status>Enabled</Status><Expiration><Days>1</Days>" +
+                        "</Expiration></Rule>"), "MalformedXML"),
+                Map.entry("<Foo>" + rule("r", "<Days>1</Days>") + "</Foo>",
+                        "MalformedXML"),
+                // xsi:nil, which Jackson would bind as a missing element:
+                // an empty filter scoping the rule to the whole bucket, a
+                // missing filter, or a missing expiration count.
+                Map.entry(configuration(filtered("<Prefix " + XSI +
+                        " xsi:nil=\"true\"/>")), "MalformedXML"),
+                Map.entry(configuration("<Rule><ID>r</ID><Filter " + XSI +
+                        " xsi:nil=\"true\"><Prefix>keep/</Prefix></Filter>" +
+                        "<Status>Enabled</Status><Expiration><Days>1</Days>" +
+                        "</Expiration></Rule>"), "MalformedXML"),
+                Map.entry(configuration("<Rule><ID>r</ID><Filter>" +
+                        "<And " + XSI + " xsi:nil=\"true\"><Prefix>a/" +
+                        "</Prefix><Tag><Key>k</Key><Value>v</Value></Tag>" +
+                        "</And></Filter><Status>Enabled</Status>" +
+                        "<Expiration><Days>1</Days></Expiration></Rule>"),
+                        "MalformedXML"),
+                // any other attribute, too
+                Map.entry(configuration(filtered(
+                        "<Prefix foo=\"bar\">keep/</Prefix>")),
+                        "MalformedXML"),
                 Map.entry("not xml", "MalformedXML"));
         for (var entry : cases.entrySet()) {
             HttpResponse<String> response = putRaw(entry.getKey(),
@@ -377,6 +534,29 @@ public final class BucketLifecycleTest {
                     .contains("<Code>" + entry.getValue() + "</Code>");
         }
         assertThat(store.lastPut).isNull();
+    }
+
+    @Test
+    public void testLenientShapesS3TakesAreAccepted() throws Exception {
+        LifecycleBlobStore store = startWithLifecycle();
+        // AWS's own examples spell the root LifeCycleConfiguration; a bare
+        // date is taken as the midnight that begins it; a transition may be
+        // immediate; and rules with empty IDs are left for S3 to name
+        // rather than refused as duplicates.
+        String body = "<LifeCycleConfiguration xmlns=\"" + XMLNS + "\">" +
+                rule("", "<Date>2030-01-01</Date>") +
+                "<Rule><ID></ID><Filter/><Status>Enabled</Status>" +
+                "<Transition><Days>0</Days><StorageClass>GLACIER" +
+                "</StorageClass></Transition></Rule>" +
+                "</LifeCycleConfiguration>";
+        HttpResponse<String> response = putRaw(body, /*withMd5=*/ true);
+        assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
+        List<LifecycleRule> rules = store.lastPut.lifecycleConfiguration()
+                .rules();
+        assertThat(rules).hasSize(2);
+        assertThat(rules.get(0).expiration().date())
+                .isEqualTo(Instant.parse("2030-01-01T00:00:00Z"));
+        assertThat(rules.get(1).transitions().get(0).days()).isZero();
     }
 
     @Test
@@ -427,6 +607,9 @@ public final class BucketLifecycleTest {
         HttpResponse<String> delete = send(HttpRequest.newBuilder(
                 URI.create(objectUrl)).DELETE());
         assertThat(delete.statusCode()).isEqualTo(501);
+        HttpResponse<String> get = send(HttpRequest.newBuilder(
+                URI.create(objectUrl)).GET());
+        assertThat(get.statusCode()).isEqualTo(501);
 
         assertThat(store.lastPut).isNull();
         assertThat(client.getObjectAsBytes(b -> b.bucket(containerName)
@@ -452,6 +635,63 @@ public final class BucketLifecycleTest {
                 URI.create(lifecycleUrl())).GET());
         assertThat(response.statusCode()).isEqualTo(403);
         assertThat(response.body()).contains("AccessDenied");
+    }
+
+    @Test
+    public void testAnonymousObjectKeyIsNotALifecycleTarget()
+            throws Exception {
+        startWithLifecycle();
+        blobStore.setContainerAccess(containerName,
+                BucketCannedACL.PUBLIC_READ_WRITE);
+        client.putObject(b -> b.bucket(containerName).key("key"),
+                RequestBody.fromString("original"));
+        s3Proxy.stop();
+        s3Proxy = S3Proxy.builder()
+                .stopTimeout(0)
+                .endpoint(URI.create("http://127.0.0.1:0"))
+                .awsAuthentication(AuthenticationType.AWS_V2_OR_V4,
+                        "identity", "credential")
+                .blobStore(blobStore)
+                .build();
+        s3Proxy.start();
+        String objectUrl = "http://127.0.0.1:" + s3Proxy.getPort() + "/" +
+                containerName + "/key?lifecycle";
+        String body = configuration(rule("r", "<Days>1</Days>"));
+
+        assertThat(send(HttpRequest.newBuilder(URI.create(objectUrl))
+                .PUT(HttpRequest.BodyPublishers.ofString(body)))
+                .statusCode()).isEqualTo(501);
+        assertThat(send(HttpRequest.newBuilder(URI.create(objectUrl))
+                .DELETE()).statusCode()).isEqualTo(501);
+        assertThat(send(HttpRequest.newBuilder(URI.create(objectUrl))
+                .GET()).statusCode()).isEqualTo(501);
+        try (var blob = blobStore.getBlob(GetObjectRequest.builder()
+                .bucket(containerName).key("key").build())) {
+            assertThat(blob.readAllBytes()).isEqualTo(
+                    "original".getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    public void testCompletionRelaysExpirationWithoutVersioning()
+            throws Exception {
+        var store = new LifecycleBlobStore(
+                TestUtils.createTransientBlobStore());
+        store.versioning = false;
+        start(store);
+        var upload = client.createMultipartUpload(b -> b
+                .bucket(containerName).key("logs/mpu"));
+        var part = client.uploadPart(b -> b.bucket(containerName)
+                .key("logs/mpu").uploadId(upload.uploadId()).partNumber(1),
+                RequestBody.fromString("hello"));
+        var completed = client.completeMultipartUpload(b -> b
+                .bucket(containerName).key("logs/mpu")
+                .uploadId(upload.uploadId())
+                .multipartUpload(m -> m.parts(CompletedPart.builder()
+                        .partNumber(1)
+                        .eTag(part.eTag())
+                        .build())));
+        assertThat(completed.expiration()).isEqualTo(EXPIRATION);
     }
 
     @Test
@@ -512,6 +752,19 @@ public final class BucketLifecycleTest {
                 "</Expiration></Rule>";
     }
 
+    /** A rule scoped to every object, with the given actions. */
+    private static String action(String actions) {
+        return "<Rule><ID>r</ID><Filter/><Status>Enabled</Status>" +
+                actions + "</Rule>";
+    }
+
+    /** A rule expiring after a day what the given filter matches. */
+    private static String filtered(String conditions) {
+        return "<Rule><ID>r</ID><Filter>" + conditions + "</Filter>" +
+                "<Status>Enabled</Status><Expiration><Days>1</Days>" +
+                "</Expiration></Rule>";
+    }
+
     private static String configuration(String rules) {
         return "<LifecycleConfiguration xmlns=\"" + XMLNS + "\">" + rules +
                 "</LifecycleConfiguration>";
@@ -562,9 +815,15 @@ public final class BucketLifecycleTest {
                 configurations = new ConcurrentHashMap<>();
         @Nullable
         private volatile PutBucketLifecycleConfigurationRequest lastPut;
+        private volatile boolean versioning = true;
 
         LifecycleBlobStore(BlobStore delegate) {
             super(delegate);
+        }
+
+        @Override
+        public boolean supportsVersioning() {
+            return versioning && super.supportsVersioning();
         }
 
         @Override
