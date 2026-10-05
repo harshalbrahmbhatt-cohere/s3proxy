@@ -71,6 +71,15 @@ public final class AwsSignature {
      * rest -- do not belong here: they steer no operation, and V2 clients do
      * not sign them.  This is the V2 face of the flaw the unsigned x-amz-*
      * header check closes for V4.
+     *
+     * <p>Clients sign "object-lock" but not "retention" or "legal-hold", so
+     * only the first appears: naming a parameter the client left out of its
+     * string to sign would fail every such request.  The two stay exposed
+     * to the swap this list exists to prevent -- a signed GetObject read as
+     * GetObjectRetention, or the reverse -- as they are against S3 itself.
+     * The writes are not: their bodies need a Content-MD5 or x-amz-checksum
+     * header, which the signature covers.  V4, which signs the whole query
+     * string, is not affected.
      */
     private static final Set<String> SIGNED_SUBRESOURCES = Set.of(
             "acl",
@@ -81,6 +90,7 @@ public final class AwsSignature {
             "location",
             "logging",
             "notification",
+            "object-lock",
             "partNumber",
             "policy",
             "requestPayment",

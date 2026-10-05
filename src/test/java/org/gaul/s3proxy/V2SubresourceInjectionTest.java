@@ -43,7 +43,8 @@ import org.junit.jupiter.api.Test;
  * without it, yet the dispatcher still branches on it.  That is the V2 face
  * of the unsigned x-amz-* header flaw -- a signature good for one operation
  * made good for another -- and it reaches the two parameters that select an
- * operation and postdate SigV2, "?attributes" and "?encryption".  Signing
+ * operation and postdate SigV2, "?attributes", "?encryption" and
+ * "?object-lock".  Signing
  * them turns the injection into a signature mismatch while a URL that signed
  * the parameter still performs the operation it named.
  */
@@ -148,6 +149,30 @@ public final class V2SubresourceInjectionTest {
     public void testSignedEncryptionNotRefusedAsUnsigned() throws Exception {
         HttpResponse<String> response = get(presign(
                 "/" + container, "encryption") + "&encryption");
+        assertThat(response.body()).doesNotContain("SignatureDoesNotMatch");
+    }
+
+    /**
+     * The same injection for the bucket's object lock configuration, which
+     * V2 clients sign.
+     */
+    @Test
+    public void testObjectLockInjectionRejected() throws Exception {
+        HttpResponse<String> response = get(presign(
+                "/" + container, /*subresource=*/ null) + "&object-lock");
+        assertThat(response.statusCode()).isEqualTo(403);
+        assertThat(response.body()).contains("SignatureDoesNotMatch");
+    }
+
+    /**
+     * Signed, the subresource passes the signature check and reaches a
+     * store without object lock, which answers 501 on its own terms.
+     */
+    @Test
+    public void testSignedObjectLockNotRefusedAsUnsigned() throws Exception {
+        HttpResponse<String> response = get(presign(
+                "/" + container, "object-lock") + "&object-lock");
+        assertThat(response.statusCode()).isEqualTo(501);
         assertThat(response.body()).doesNotContain("SignatureDoesNotMatch");
     }
 

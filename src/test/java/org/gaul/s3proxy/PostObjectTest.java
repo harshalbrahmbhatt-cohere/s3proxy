@@ -197,6 +197,79 @@ public final class PostObjectTest {
                 .metadata()).containsEntry("foo", "barclamp");
     }
 
+    /**
+     * A store without object lock refuses a form asking for retention, as
+     * it refuses the headers on a PUT, rather than write an unprotected
+     * object the form asked to have locked.
+     */
+    @Test
+    public void testLockFieldsRefusedWithoutObjectLock() throws Exception {
+        HttpResponse<String> response = post(
+                "key", "foo.txt",
+                "x-amz-object-lock-mode", "GOVERNANCE",
+                "x-amz-object-lock-retain-until-date",
+                Instant.now().plus(1, ChronoUnit.DAYS).toString());
+        assertThat(response.statusCode()).isEqualTo(501);
+        assertThat(blobStore.blobExists(containerName, "foo.txt")).isFalse();
+
+        response = post("key", "foo.txt",
+                "x-amz-object-lock-legal-hold", "ON");
+        assertThat(response.statusCode()).isEqualTo(501);
+        assertThat(blobStore.blobExists(containerName, "foo.txt")).isFalse();
+    }
+
+    /** A hold OFF asks for no protection, so it is let through. */
+    @Test
+    public void testLegalHoldOffAcceptedWithoutObjectLock() throws Exception {
+        HttpResponse<String> response = post(
+                "key", "foo.txt", "x-amz-object-lock-legal-hold", "OFF");
+        assertThat(response.statusCode()).isEqualTo(204);
+        assertThat(body("foo.txt")).isEqualTo("bar");
+    }
+
+    /** A malformed lock field is a bad request, as the header would be. */
+    @Test
+    public void testLockModeWithoutDateRefused() throws Exception {
+        HttpResponse<String> response = post(
+                "key", "foo.txt", "x-amz-object-lock-mode", "GOVERNANCE");
+        assertThat(response.statusCode()).isEqualTo(400);
+        assertThat(blobStore.blobExists(containerName, "foo.txt")).isFalse();
+    }
+
+    /**
+     * An unsigned form may not ask for a lock even of a public-write
+     * bucket: object lock answers to permissions no ACL grant carries.
+     */
+    @Test
+    public void testUnsignedPostWithLockFieldDenied() throws Exception {
+        blobStore.setContainerAccess(containerName,
+                BucketCannedACL.PUBLIC_READ_WRITE);
+        HttpResponse<String> response = postUnsigned(
+                "key", "foo.txt", "x-amz-object-lock-legal-hold", "ON");
+        assertThat(response.statusCode()).isEqualTo(403);
+        assertThat(blobStore.blobExists(containerName, "foo.txt")).isFalse();
+    }
+
+    /**
+     * The proxy does not pass event holds through, so a form asking for one
+     * is refused rather than stored without it, signed or not.
+     */
+    @Test
+    public void testEventHoldFieldRefused() throws Exception {
+        HttpResponse<String> response = post("key", "foo.txt",
+                "x-amz-object-lock-event-hold", "ON",
+                "x-amz-object-lock-event-hold-duration-days", "30");
+        assertThat(response.statusCode()).isEqualTo(501);
+        assertThat(blobStore.blobExists(containerName, "foo.txt")).isFalse();
+
+        blobStore.setContainerAccess(containerName,
+                BucketCannedACL.PUBLIC_READ_WRITE);
+        response = postUnsigned("key", "foo.txt",
+                "x-amz-object-lock-event-hold", "ON");
+        assertThat(response.statusCode()).isEqualTo(403);
+        assertThat(blobStore.blobExists(containerName, "foo.txt")).isFalse();
+    }
+
     /** A signed policy the form satisfies. */
     @Test
     public void testAuthenticatedPost() throws Exception {
