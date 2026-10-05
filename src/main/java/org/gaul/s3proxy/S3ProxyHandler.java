@@ -484,6 +484,28 @@ public class S3ProxyHandler {
         this.maximumTimeSkew = maximumTimeSkew;
     }
 
+    /**
+     * Refuses a subresource that names a bucket configuration when it is
+     * sent to an object key, rather than letting it dispatch as the plain
+     * object operation.
+     */
+    private static void refuseBucketOnlyParameters(HttpServletRequest request,
+            String[] path) {
+        if (path.length <= 2 || path[2].isEmpty()) {
+            return;
+        }
+        for (String parameter : BUCKET_ONLY_PARAMETERS) {
+            if (request.getParameter(parameter) != null) {
+                // Not at error level: the anonymous path reaches this
+                // before any authentication, so any client could fill
+                // the log.
+                logger.debug("Bucket-only parameter {} with URI {}",
+                        parameter, request.getRequestURI());
+                throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
+            }
+        }
+    }
+
     private static XmlMapper createXmlMapper() {
         XMLInputFactory inputFactory = XMLInputFactory.newFactory();
         inputFactory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
@@ -700,19 +722,6 @@ public class S3ProxyHandler {
             path[i] = percentDecode(path[i]);
         }
 
-        // A bucket-only subresource on an object key is refused before
-        // either path dispatches, the anonymous one included: otherwise it
-        // would run as the plain object operation.
-        if (path.length > 2 && !path[2].isEmpty()) {
-            for (String parameter : BUCKET_ONLY_PARAMETERS) {
-                if (request.getParameter(parameter) != null) {
-                    logger.error("Unknown parameters {} with URI {}",
-                            parameter, request.getRequestURI());
-                    throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
-                }
-            }
-        }
-
         // when access information is not provided in request header,
         // treat it as anonymous, return all public accessible information
         // -- or store it, where a bucket grants AllUsers WRITE
@@ -725,6 +734,10 @@ public class S3ProxyHandler {
                 request.getParameter("X-Amz-Algorithm") == null && // v4 query
                 request.getParameter("AWSAccessKeyId") == null &&  // v2 query
                 defaultBlobStore != null) {
+            // A bucket-only subresource on an object key would otherwise
+            // run as the plain object operation.  Signed requests are
+            // refused the same way after authentication, below.
+            refuseBucketOnlyParameters(request, path);
             doHandleAnonymous(request, response, is, uri, path,
                     defaultBlobStore, ctx);
             return;
@@ -886,6 +899,7 @@ public class S3ProxyHandler {
                 throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
             }
         }
+        refuseBucketOnlyParameters(request, path);
 
         // emit NotImplemented for unknown x-amz- headers
         for (String headerName : Collections.list(request.getHeaderNames())) {
@@ -2550,7 +2564,7 @@ public class S3ProxyHandler {
      * PutBucketLifecycleConfiguration.  S3 refuses the request without a
      * body checksum, and so does this.  The configuration is vetted for what
      * every backend would have to refuse -- a rule without an action, an ID
-     * used twice, a count that is not a positive number -- so that each
+     * used twice, a count out of range -- so that each
      * store sees only a configuration S3 itself would take, and judges
      * whether it can carry it out.
      */
@@ -5818,7 +5832,12 @@ public class S3ProxyHandler {
 
         response.setCharacterEncoding(UTF_8);
         addCorsResponseHeader(request, response);
-        if (completedResult != null && completedResult.versionId() != null) {
+        // A store that completes synchronously only for its lifecycle rules
+        // may sit over a versioned backend while refusing version requests
+        // itself, so the backend's version is reported only where the
+        // client could use it.
+        if (completedResult != null && completedResult.versionId() != null &&
+                blobStore.supportsVersioning()) {
             response.addHeader(AwsHttpHeaders.VERSION_ID,
                     completedResult.versionId());
         }
@@ -5830,7 +5849,7 @@ public class S3ProxyHandler {
         // The asynchronous completion below commits the response before the
         // outcome is known, so only the synchronous path can report the
         // encryption -- and a store that supports it always takes it, since
-        // it also supports versioning.
+        // it also supports versioning or lifecycle.
         if (completedResult != null) {
             // The SDK's completion response models no customer-key fields,
             // so their echo comes from the request: a completion that

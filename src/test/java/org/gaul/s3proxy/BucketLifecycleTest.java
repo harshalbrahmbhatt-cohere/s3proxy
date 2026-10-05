@@ -93,6 +93,9 @@ public final class BucketLifecycleTest {
     private static final String XSI =
             "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"";
 
+    /** One client for the raw requests, rather than one per request. */
+    private static final HttpClient HTTP = HttpClient.newHttpClient();
+
     private BlobStore blobStore;
     private S3Proxy s3Proxy;
     private S3Client client;
@@ -522,6 +525,43 @@ public final class BucketLifecycleTest {
                 Map.entry(configuration(filtered(
                         "<Prefix foo=\"bar\">keep/</Prefix>")),
                         "MalformedXML"),
+                // Repeats split by another element, which Jackson would
+                // bind as the last run alone: a lost tag condition, or a
+                // lost transition.
+                Map.entry(configuration(filtered("<And><Tag><Key>k1</Key>" +
+                        "<Value>v1</Value></Tag><Prefix>p</Prefix><Tag>" +
+                        "<Key>k2</Key><Value>v2</Value></Tag></And>")),
+                        "MalformedXML"),
+                Map.entry(configuration("<Rule><ID>r</ID><Filter/>" +
+                        "<Transition><Days>30</Days><StorageClass>GLACIER" +
+                        "</StorageClass></Transition><Status>Enabled" +
+                        "</Status><Transition><Days>90</Days><StorageClass>" +
+                        "DEEP_ARCHIVE</StorageClass></Transition></Rule>"),
+                        "MalformedXML"),
+                // digits of other scripts, which Java's parsers would read
+                Map.entry(configuration(rule("r",
+                        "<Days>\u0661\u0660</Days>")), "MalformedXML"),
+                Map.entry(configuration(filtered("<ObjectSizeGreaterThan>" +
+                        "\uff10</ObjectSizeGreaterThan>")), "MalformedXML"),
+                // a tag without a value
+                Map.entry(configuration(filtered(
+                        "<Tag><Key>k</Key></Tag>")), "MalformedXML"),
+                // more empty or incomplete actions, sizes under an And, and
+                // text where elements belong, in CDATA
+                Map.entry(configuration(action("<Transition/>")),
+                        "MalformedXML"),
+                Map.entry(configuration(action(
+                        "<NoncurrentVersionTransition/>")), "MalformedXML"),
+                Map.entry(configuration(action(
+                        "<NoncurrentVersionTransition><NoncurrentDays>1" +
+                        "</NoncurrentDays></NoncurrentVersionTransition>")),
+                        "MalformedXML"),
+                Map.entry(configuration(filtered("<And><Prefix>a</Prefix>" +
+                        "<ObjectSizeLessThan>-1</ObjectSizeLessThan></And>")),
+                        "InvalidArgument"),
+                Map.entry(configuration(filtered(
+                        "<![CDATA[text]]><Prefix>a</Prefix>")),
+                        "MalformedXML"),
                 Map.entry("not xml", "MalformedXML"));
         for (var entry : cases.entrySet()) {
             HttpResponse<String> response = putRaw(entry.getKey(),
@@ -539,12 +579,21 @@ public final class BucketLifecycleTest {
     @Test
     public void testLenientShapesS3TakesAreAccepted() throws Exception {
         LifecycleBlobStore store = startWithLifecycle();
-        // AWS's own examples spell the root LifeCycleConfiguration; a bare
-        // date is taken as the midnight that begins it; a transition may be
-        // immediate; and rules with empty IDs are left for S3 to name
-        // rather than refused as duplicates.
+        // AWS's own examples spell the root LifeCycleConfiguration; values
+        // keep the lexical forms their schema types allow -- whitespace, a
+        // sign, leading zeros, 1 for true; a tag's value may be empty; a
+        // bare date is taken as the midnight that begins it; a transition
+        // may be immediate; and rules with empty IDs are left for S3 to
+        // name rather than refused as duplicates.
         String body = "<LifeCycleConfiguration xmlns=\"" + XMLNS + "\">" +
-                rule("", "<Date>2030-01-01</Date>") +
+                rule("", "<Date> 2030-01-01T00:00:00Z </Date>") +
+                rule("one", "<ExpiredObjectDeleteMarker> 1 " +
+                        "</ExpiredObjectDeleteMarker>") +
+                rule("tags", "<Days> +0010 </Days>").replace(
+                        "<Prefix></Prefix>", "<And><Tag><Key>a</Key>" +
+                        "<Value>1</Value></Tag><Tag><Key>b</Key><Value>" +
+                        "</Value></Tag><Prefix>p</Prefix></And>") +
+                rule("bare", "<Date>2030-01-01</Date>") +
                 "<Rule><ID></ID><Filter/><Status>Enabled</Status>" +
                 "<Transition><Days>0</Days><StorageClass>GLACIER" +
                 "</StorageClass></Transition></Rule>" +
@@ -553,10 +602,18 @@ public final class BucketLifecycleTest {
         assertThat(response.statusCode()).as(response.body()).isEqualTo(200);
         List<LifecycleRule> rules = store.lastPut.lifecycleConfiguration()
                 .rules();
-        assertThat(rules).hasSize(2);
+        assertThat(rules).hasSize(5);
         assertThat(rules.get(0).expiration().date())
                 .isEqualTo(Instant.parse("2030-01-01T00:00:00Z"));
-        assertThat(rules.get(1).transitions().get(0).days()).isZero();
+        assertThat(rules.get(1).expiration().expiredObjectDeleteMarker())
+                .isTrue();
+        assertThat(rules.get(2).expiration().days()).isEqualTo(10);
+        assertThat(rules.get(2).filter().and().tags()).containsExactly(
+                Tag.builder().key("a").value("1").build(),
+                Tag.builder().key("b").value("").build());
+        assertThat(rules.get(3).expiration().date())
+                .isEqualTo(Instant.parse("2030-01-01T00:00:00Z"));
+        assertThat(rules.get(4).transitions().get(0).days()).isZero();
     }
 
     @Test
@@ -673,6 +730,69 @@ public final class BucketLifecycleTest {
     }
 
     @Test
+    public void testAnonymousBucketWritesAreRefused() throws Exception {
+        LifecycleBlobStore store = startWithLifecycle();
+        client.putBucketLifecycleConfiguration(b -> b
+                .bucket(containerName)
+                .lifecycleConfiguration(c -> c.rules(expireAfter("r", 30))));
+        blobStore.setContainerAccess(containerName,
+                BucketCannedACL.PUBLIC_READ_WRITE);
+        s3Proxy.stop();
+        s3Proxy = S3Proxy.builder()
+                .stopTimeout(0)
+                .endpoint(URI.create("http://127.0.0.1:0"))
+                .awsAuthentication(AuthenticationType.AWS_V2_OR_V4,
+                        "identity", "credential")
+                .blobStore(blobStore)
+                .build();
+        s3Proxy.start();
+        var putsBefore = store.lastPut;
+        String body = configuration(rule("all", "<Days>1</Days>"));
+
+        // A public-write bucket must not let anyone replace its rules with
+        // a whole-bucket expiration, nor remove them.
+        HttpResponse<String> put = send(HttpRequest.newBuilder(
+                URI.create(lifecycleUrl()))
+                .header("Content-MD5", md5(body))
+                .PUT(HttpRequest.BodyPublishers.ofString(body)));
+        assertThat(put.statusCode()).isEqualTo(403);
+        HttpResponse<String> delete = send(HttpRequest.newBuilder(
+                URI.create(lifecycleUrl())).DELETE());
+        assertThat(delete.statusCode()).isEqualTo(403);
+
+        assertThat(store.lastPut).isSameAs(putsBefore);
+        assertThat(store.getBucketLifecycleConfiguration(
+                GetBucketLifecycleConfigurationRequest.builder()
+                        .bucket(containerName).build()).rules())
+                .isEqualTo(expireAfter("r", 30));
+        assertThat(blobStore.containerExists(containerName)).isTrue();
+    }
+
+    @Test
+    public void testSignedObjectKeyRequestIsAuthenticatedFirst()
+            throws Exception {
+        startWithLifecycle();
+        s3Proxy.stop();
+        s3Proxy = S3Proxy.builder()
+                .stopTimeout(0)
+                .endpoint(URI.create("http://127.0.0.1:0"))
+                .awsAuthentication(AuthenticationType.AWS_V2_OR_V4,
+                        "identity", "credential")
+                .blobStore(blobStore)
+                .build();
+        s3Proxy.start();
+        // A bad signature answers 403, not the 501 a signed request for
+        // the same URL would get.
+        HttpResponse<String> response = send(HttpRequest.newBuilder(
+                URI.create("http://127.0.0.1:" + s3Proxy.getPort() + "/" +
+                        containerName + "/key?lifecycle"))
+                .header("Authorization", "AWS identity:bogus")
+                .header("x-amz-date", "20261005T000000Z")
+                .GET());
+        assertThat(response.statusCode()).isEqualTo(403);
+    }
+
+    @Test
     public void testCompletionRelaysExpirationWithoutVersioning()
             throws Exception {
         var store = new LifecycleBlobStore(
@@ -692,6 +812,8 @@ public final class BucketLifecycleTest {
                         .eTag(part.eTag())
                         .build())));
         assertThat(completed.expiration()).isEqualTo(EXPIRATION);
+        // The store refuses version requests, so it reports no version.
+        assertThat(completed.versionId()).isNull();
     }
 
     @Test
@@ -792,8 +914,7 @@ public final class BucketLifecycleTest {
 
     private static HttpResponse<String> send(HttpRequest.Builder builder)
             throws Exception {
-        return HttpClient.newHttpClient().send(builder.build(),
-                HttpResponse.BodyHandlers.ofString());
+        return HTTP.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private static void assertRefused(ThrowingCallable callable) {

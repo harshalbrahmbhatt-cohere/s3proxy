@@ -31,6 +31,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamConstants;
@@ -71,7 +72,9 @@ final class LifecycleConfigurations {
      * and keeps the last of a repeated one, so a Filter with two Prefixes,
      * or one whose condition is misspelled, would bind to a broader rule
      * than the client sent -- one S3 refuses as MalformedXML, and one whose
-     * expiration would delete what the client meant to keep.
+     * expiration would delete what the client meant to keep.  Kept in step
+     * with the records in LifecycleConfigurationRequest: an element named
+     * there but not here is refused, which fails closed.
      */
     private static final Map<String, Map<String, Integer>> SCHEMA = Map.of(
             "LifecycleConfiguration", Map.of("Rule", MANY),
@@ -109,6 +112,7 @@ final class LifecycleConfigurations {
                     "DaysAfterInitiation", 1));
 
     private static final XMLInputFactory INPUT_FACTORY = newInputFactory();
+    private static final Pattern NUMBER = Pattern.compile("[+-]?[0-9]+");
 
     private LifecycleConfigurations() {
     }
@@ -144,9 +148,11 @@ final class LifecycleConfigurations {
 
     private static void checkStructure(XMLStreamReader reader)
             throws XMLStreamException {
-        // Each open element, with how often each child has appeared in it.
+        // Each open element, with how often each child has appeared in it
+        // and which child came last.
         Deque<String> names = new ArrayDeque<>();
         Deque<Map<String, Integer>> seen = new ArrayDeque<>();
+        Deque<String> last = new ArrayDeque<>();
         while (reader.hasNext()) {
             int event = reader.next();
             if (event == XMLStreamConstants.START_ELEMENT) {
@@ -169,6 +175,18 @@ final class LifecycleConfigurations {
                         throw new S3ProxyException(
                                 S3ErrorCode.MALFORMED_X_M_L);
                     }
+                    // Jackson keeps only the last run of a repeated element:
+                    // Tags split by a Prefix, or Transitions split by a
+                    // Status, would lose every copy before the split -- a
+                    // dropped tag condition broadens what the rule expires.
+                    // The SDKs write each run whole, so a split one is
+                    // refused rather than merged.
+                    if (count > 1 && !name.equals(last.peek())) {
+                        throw new S3ProxyException(
+                                S3ErrorCode.MALFORMED_X_M_L);
+                    }
+                    last.pop();
+                    last.push(name);
                 }
                 // S3's schema gives no lifecycle element an attribute.  Most
                 // would only be ignored, but Jackson binds xsi:nil as a
@@ -181,9 +199,11 @@ final class LifecycleConfigurations {
                 }
                 names.push(name);
                 seen.push(new HashMap<>());
+                last.push("");
             } else if (event == XMLStreamConstants.END_ELEMENT) {
                 names.pop();
                 seen.pop();
+                last.pop();
             } else if ((event == XMLStreamConstants.CHARACTERS ||
                     event == XMLStreamConstants.CDATA) &&
                     !names.isEmpty() && SCHEMA.containsKey(names.peek()) &&
@@ -365,13 +385,18 @@ final class LifecycleConfigurations {
         return builder.build();
     }
 
+    /**
+     * A tag names both a key and a value, as S3's schema requires: one sent
+     * without a value is refused rather than given an empty one, which
+     * would match a different set of objects.
+     */
     private static Tag toTag(LifecycleConfigurationRequest.@Nullable Tag tag) {
-        if (tag == null || tag.key() == null) {
+        if (tag == null || tag.key() == null || tag.value() == null) {
             throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
         }
         return Tag.builder()
                 .key(tag.key())
-                .value(tag.value() == null ? "" : tag.value())
+                .value(tag.value())
                 .build();
     }
 
@@ -392,11 +417,15 @@ final class LifecycleConfigurations {
                         "ExpiredObjectDeleteMarker cannot be specified with" +
                         " Days or Date in a Lifecycle Expiration Policy");
             }
-            if (!marker.equals("true") && !marker.equals("false")) {
-                throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
-            }
+            // xs:boolean, whose lexical forms include 1 and 0.
+            boolean value = switch (marker.trim()) {
+            case "true", "1" -> true;
+            case "false", "0" -> false;
+            default -> throw new S3ProxyException(
+                    S3ErrorCode.MALFORMED_X_M_L);
+            };
             return LifecycleExpiration.builder()
-                    .expiredObjectDeleteMarker(Boolean.valueOf(marker))
+                    .expiredObjectDeleteMarker(value)
                     .build();
         }
         if (expiration.date() != null) {
@@ -434,7 +463,9 @@ final class LifecycleConfigurations {
      * on whole days.  Clients send an ISO 8601 date-time; a bare date is
      * taken as the midnight that begins it.
      */
-    private static Instant midnight(String value) {
+    private static Instant midnight(String text) {
+        // xs:dateTime collapses surrounding whitespace.
+        String value = text.trim();
         Instant instant;
         try {
             instant = OffsetDateTime.parse(value).toInstant();
@@ -477,11 +508,8 @@ final class LifecycleConfigurations {
     }
 
     private static int integer(@Nullable String value) {
-        if (value == null) {
-            throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
-        }
         try {
-            return Integer.parseInt(value.trim());
+            return Integer.parseInt(digits(value));
         } catch (NumberFormatException nfe) {
             throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L, nfe);
         }
@@ -490,7 +518,7 @@ final class LifecycleConfigurations {
     private static long size(String value) {
         long parsed;
         try {
-            parsed = Long.parseLong(value.trim());
+            parsed = Long.parseLong(digits(value));
         } catch (NumberFormatException nfe) {
             throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L, nfe);
         }
@@ -499,6 +527,22 @@ final class LifecycleConfigurations {
                     "Object size must be a nonnegative number");
         }
         return parsed;
+    }
+
+    /**
+     * A number as xs:int and xs:long spell it: a sign and ASCII digits,
+     * with surrounding whitespace collapsed.  Java's parsers alone would
+     * also read the digits of every other script.
+     */
+    private static String digits(@Nullable String value) {
+        if (value == null) {
+            throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+        }
+        String trimmed = value.trim();
+        if (!NUMBER.matcher(trimmed).matches()) {
+            throw new S3ProxyException(S3ErrorCode.MALFORMED_X_M_L);
+        }
+        return trimmed;
     }
 
     private static boolean isEmpty(@Nullable Iterable<?> values) {

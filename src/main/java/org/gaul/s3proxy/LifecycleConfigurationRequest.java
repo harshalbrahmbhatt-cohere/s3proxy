@@ -24,7 +24,8 @@ import tools.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 /**
  * The PutBucketLifecycleConfiguration body.  Numbers are kept as the strings
  * the client sent, so that one that does not parse is refused as S3 refuses
- * it rather than as whatever Jackson makes of it.
+ * it rather than as whatever Jackson makes of it.  An element added here must
+ * be added to LifecycleConfigurations.SCHEMA too, which vets the body first.
  */
 record LifecycleConfigurationRequest(
         @JacksonXmlProperty(localName = "Rule")
