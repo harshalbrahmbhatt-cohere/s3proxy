@@ -32,6 +32,7 @@ import org.gaul.s3proxy.S3ProxyConstants;
 import org.gaul.s3proxy.TestUtils;
 import org.gaul.s3proxy.blobstore.BlobStore;
 import org.gaul.s3proxy.blobstore.ForwardingBlobStore;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import software.amazon.awssdk.services.s3.model.DeleteBucketLifecycleRequest;
@@ -51,6 +52,22 @@ import software.amazon.awssdk.services.s3.model.PutBucketLifecycleConfigurationR
  * the caller never named, while their other buckets pass through.
  */
 public final class LifecycleMiddlewareTest {
+    /** The recorders this test made, each holding a store to close. */
+    private final List<LifecycleRecorder> recorders = new ArrayList<>();
+
+    private LifecycleRecorder recorder() {
+        var recorder = new LifecycleRecorder();
+        recorders.add(recorder);
+        return recorder;
+    }
+
+    @AfterEach
+    public void tearDown() {
+        for (var recorder : recorders) {
+            recorder.close();
+        }
+    }
+
     /**
      * A put of one rule for the given bucket.  A fresh builder each time:
      * the SDK's builders are mutable, and these tests run concurrently.
@@ -69,7 +86,7 @@ public final class LifecycleMiddlewareTest {
 
     @Test
     public void testAliasSendsTheRealBucketName() {
-        var recorder = new LifecycleRecorder();
+        var recorder = recorder();
         BlobStore store = AliasBlobStore.newAliasBlobStore(recorder,
                 ImmutableBiMap.of("alias", "backend"));
 
@@ -88,7 +105,7 @@ public final class LifecycleMiddlewareTest {
 
     @Test
     public void testShardedBucketIsRefused() {
-        var recorder = new LifecycleRecorder();
+        var recorder = recorder();
         BlobStore store = ShardedBlobStore.newShardedBlobStore(recorder,
                 Map.of("sharded", 4), Map.of("sharded", "shard"));
 
@@ -102,7 +119,7 @@ public final class LifecycleMiddlewareTest {
 
     @Test
     public void testPrefixedBucketIsRefused() {
-        var recorder = new LifecycleRecorder();
+        var recorder = recorder();
         BlobStore store = PrefixBlobStore.newPrefixBlobStore(recorder,
                 Map.of("prefixed", "tenant/"));
 
@@ -118,7 +135,7 @@ public final class LifecycleMiddlewareTest {
 
     @Test
     public void testReadOnlyRefusesWritesButReads() {
-        var recorder = new LifecycleRecorder();
+        var recorder = recorder();
         BlobStore store = ReadOnlyBlobStore.newReadOnlyBlobStore(recorder);
 
         assertThatThrownBy(() -> store.putBucketLifecycleConfiguration(
@@ -143,7 +160,7 @@ public final class LifecycleMiddlewareTest {
                 S3ProxyConstants.PROPERTY_REGEX_BLOBSTORE_REPLACE + ".rename",
                 "bar/$1");
         BlobStore store = RegexBlobStore.newRegexBlobStore(
-                new LifecycleRecorder(),
+                recorder(),
                 RegexBlobStore.parseRegexs(properties));
         assertThat(store.supportsBucketLifecycle()).isFalse();
     }
@@ -160,14 +177,14 @@ public final class LifecycleMiddlewareTest {
                 S3ProxyConstants.PROPERTY_ENCRYPTED_BLOBSTORE_SALT,
                 "12345678");
         BlobStore store = EncryptedBlobStore.newEncryptedBlobStore(
-                new LifecycleRecorder(), properties);
+                recorder(), properties);
         assertThat(store.supportsBucketLifecycle()).isFalse();
     }
 
     @Test
     public void testNullStoreDisablesLifecycle() {
         BlobStore store = NullBlobStore.newNullBlobStore(
-                new LifecycleRecorder());
+                recorder());
         assertThat(store.supportsBucketLifecycle()).isFalse();
     }
 
@@ -176,7 +193,7 @@ public final class LifecycleMiddlewareTest {
         var executor = Executors.newSingleThreadScheduledExecutor();
         try {
             BlobStore store = EventualBlobStore.newEventualBlobStore(
-                    new LifecycleRecorder(), new LifecycleRecorder(),
+                    recorder(), recorder(),
                     executor, 0, TimeUnit.SECONDS, 1.0);
             assertThat(store.supportsBucketLifecycle()).isFalse();
         } finally {

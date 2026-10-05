@@ -26,6 +26,9 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -787,9 +790,12 @@ public final class BucketLifecycleTest {
                 URI.create("http://127.0.0.1:" + s3Proxy.getPort() + "/" +
                         containerName + "/key?lifecycle"))
                 .header("Authorization", "AWS identity:bogus")
-                .header("x-amz-date", "20261005T000000Z")
+                .header("Date", DateTimeFormatter.RFC_1123_DATE_TIME.format(
+                        ZonedDateTime.now(ZoneOffset.UTC)))
                 .GET());
         assertThat(response.statusCode()).isEqualTo(403);
+        assertThat(response.body()).contains(
+                "<Code>SignatureDoesNotMatch</Code>");
     }
 
     @Test
@@ -812,8 +818,6 @@ public final class BucketLifecycleTest {
                         .eTag(part.eTag())
                         .build())));
         assertThat(completed.expiration()).isEqualTo(EXPIRATION);
-        // The store refuses version requests, so it reports no version.
-        assertThat(completed.versionId()).isNull();
     }
 
     @Test

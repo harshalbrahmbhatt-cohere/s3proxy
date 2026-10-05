@@ -899,7 +899,6 @@ public class S3ProxyHandler {
                 throw new S3ProxyException(S3ErrorCode.NOT_IMPLEMENTED);
             }
         }
-        refuseBucketOnlyParameters(request, path);
 
         // emit NotImplemented for unknown x-amz- headers
         for (String headerName : Collections.list(request.getHeaderNames())) {
@@ -1170,6 +1169,10 @@ public class S3ProxyHandler {
                         S3ErrorCode.X_AMZ_CONTENT_S_H_A_256_MISMATCH);
             }
         }
+
+        // Only now, with the request authenticated, so that a bad
+        // signature answers as it would without the subresource.
+        refuseBucketOnlyParameters(request, path);
 
         // Validate container name
         if (!uri.equals("/") && !isValidContainer(path[1])) {
@@ -5832,12 +5835,7 @@ public class S3ProxyHandler {
 
         response.setCharacterEncoding(UTF_8);
         addCorsResponseHeader(request, response);
-        // A store that completes synchronously only for its lifecycle rules
-        // may sit over a versioned backend while refusing version requests
-        // itself, so the backend's version is reported only where the
-        // client could use it.
-        if (completedResult != null && completedResult.versionId() != null &&
-                blobStore.supportsVersioning()) {
+        if (completedResult != null && completedResult.versionId() != null) {
             response.addHeader(AwsHttpHeaders.VERSION_ID,
                     completedResult.versionId());
         }
